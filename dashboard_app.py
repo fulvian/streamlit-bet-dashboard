@@ -7,35 +7,27 @@ from plotly.subplots import make_subplots
 import numpy as np
 import io
 import locale
+import re # Importa il modulo per le espressioni regolari
 
 # --- Impostazioni Iniziali ---
 st.set_page_config(layout="wide")
 st.title("📊 Dashboard Analisi Scommesse")
 
-# --- MODIFICA: Gestione Localizzazione con Fallback ---
-# Flag per sapere se la localizzazione italiana è stata impostata con successo
+# --- Gestione Localizzazione con Fallback ---
 italian_locale_set = False
 try:
-    # Prova prima il formato UTF-8 comune su Linux/macOS
     locale.setlocale(locale.LC_ALL, 'it_IT.UTF-8')
-    italian_locale_set = True # Successo!
+    italian_locale_set = True
 except locale.Error:
     try:
-        # Prova il formato comune su Windows
         locale.setlocale(locale.LC_ALL, 'Italian_Italy.1252')
-        italian_locale_set = True # Successo!
+        italian_locale_set = True
     except locale.Error:
-        # Se entrambi falliscono, mostra l'avviso
         st.warning("Localizzazione italiana ('it_IT.UTF-8' o 'Italian_Italy.1252') non disponibile sul sistema. Verrà usata una formattazione valuta di fallback (€ X.XX).")
-# --- FINE MODIFICA ---
 
 # --- Palette Colori Tenui ---
-color_win = '#8FBC8F'
-color_loss = '#CD5C5C'
-color_line1 = '#B0C4DE'
-color_line2 = '#FFEC8B'
-color_tbd = '#D3D3D3'
-color_unknown = '#A9A9A9'
+color_win = '#8FBC8F'; color_loss = '#CD5C5C'; color_line1 = '#B0C4DE'
+color_line2 = '#FFEC8B'; color_tbd = '#D3D3D3'; color_unknown = '#A9A9A9'
 color_map_esiti = {'Win': color_win, 'Loss': color_loss, 'TBD': color_tbd, 'Unknown': color_unknown}
 
 # --- Funzioni di Pulizia Dati ---
@@ -51,11 +43,54 @@ def clean_numeric_value(value_str):
         except ValueError: return float(cleaned_str.replace(',', '.'))
     except (ValueError, TypeError): return np.nan
 
+# --- MODIFICA: Funzione Parsing Date più robusta ---
+# Dizionario per mappare mesi italiani a inglesi
+italian_to_english_month = {
+    'Gen': 'Jan', 'Feb': 'Feb', 'Mar': 'Mar', 'Apr': 'Apr',
+    'Mag': 'May', 'Giu': 'Jun', 'Lug': 'Jul', 'Ago': 'Aug',
+    'Set': 'Sep', 'Ott': 'Oct', 'Nov': 'Nov', 'Dic': 'Dec'
+}
+
 def parse_italian_date(date_str):
-    """Converte una stringa di data in datetime."""
-    if pd.isna(date_str): return pd.NaT
-    try: return pd.to_datetime(date_str, format='%d %b %Y', errors='raise')
-    except ValueError: return pd.to_datetime(date_str, errors='coerce')
+    """
+    Converte una stringa di data (potenzialmente in formato italiano 'gg Mmm AAAA')
+    in un oggetto datetime in modo robusto, anche senza locale italiano.
+    """
+    if pd.isna(date_str):
+        return pd.NaT
+
+    cleaned_date_str = str(date_str).strip()
+
+    # Tenta di sostituire le abbreviazioni dei mesi italiani con quelle inglesi
+    # Itera sul dizionario
+    for ita, eng in italian_to_english_month.items():
+        # Cerca l'abbreviazione italiana (ignorando maiuscole/minuscole) nella stringa
+        if ita.lower() in cleaned_date_str.lower():
+            try:
+                # Trova l'occorrenza esatta (es. "Mag") per sostituirla correttamente con "May"
+                # re.IGNORECASE fa la ricerca case-insensitive
+                match = re.search(ita, cleaned_date_str, re.IGNORECASE)
+                if match:
+                    # Sostituisce l'occorrenza trovata con l'abbreviazione inglese
+                    cleaned_date_str = cleaned_date_str.replace(match.group(0), eng)
+                    break # Esce dal ciclo dopo la prima sostituzione trovata
+            except Exception:
+                # Fallback se la regex fallisce (improbabile ma sicuro)
+                # Prova a sostituire diverse varianti di case
+                cleaned_date_str = cleaned_date_str.replace(ita, eng).replace(ita.lower(), eng.lower()).replace(ita.title(), eng.title())
+                break # Esce comunque dal ciclo
+
+    # Ora prova a fare il parsing con il formato atteso (usando abbreviazioni inglesi)
+    try:
+        # errors='raise' per forzare l'errore se il formato non corrisponde
+        return pd.to_datetime(cleaned_date_str, format='%d %b %Y', errors='raise')
+    except ValueError:
+        # Se il formato specifico fallisce ancora (es. data in formato diverso),
+        # prova a far indovinare a Pandas
+        # errors='coerce' restituisce NaT se non riesce a indovinare
+        return pd.to_datetime(cleaned_date_str, errors='coerce')
+# --- FINE MODIFICA ---
+
 
 def calculate_pl(row, stake_col='Stake', quota_col='Quota', esito_col='Esito_Standard'):
     """Calcola il Profit/Loss (P/L) per una riga."""
@@ -67,25 +102,13 @@ def calculate_pl(row, stake_col='Stake', quota_col='Quota', esito_col='Esito_Sta
         return round(-stake, 2)
     else: return 0.0
 
-# --- MODIFICA: Funzione Formattazione Valuta con Fallback ---
 def format_currency(value):
-    """
-    Formatta un valore come valuta.
-    Usa la localizzazione italiana se disponibile, altrimenti usa un formato fallback (€ X.XX).
-    """
-    if pd.isna(value):
-        return "N/D" # O "" a seconda delle preferenze
+    """Formatta un valore come valuta con fallback."""
+    if pd.isna(value): return "N/D"
     if italian_locale_set:
-        # Se la localizzazione italiana è attiva, usa locale.currency
-        try:
-            return locale.currency(value, grouping=True)
-        except ValueError:
-            # Fallback ulteriore nel caso locale.currency dia problemi anche con locale IT impostato
-             return f"{value:.2f} €"
-    else:
-        # Altrimenti, usa la formattazione manuale fallback
-        return f"{value:.2f} €"
-# --- FINE MODIFICA ---
+        try: return locale.currency(value, grouping=True)
+        except ValueError: return f"{value:.2f} €" # Fallback ulteriore
+    else: return f"{value:.2f} €" # Fallback principale
 
 
 # --- Caricamento e Pulizia Dati ---
@@ -96,12 +119,8 @@ colonna_prob = "Probabilita Stimata"; colonna_edge = "Edge Value"; colonna_esito
 colonna_media_pt_stimati = "Media Punti Stimati"; colonna_confidenza = "Confidenza"; colonna_ris_finale = "Punteggio finale"
 
 try:
-    # Assicurati che lo script usi il nome file corretto
-    # Cambia 'dashboard_app.py' con il nome effettivo del tuo file se diverso
-    # Il nome del file CSV è letto dalla variabile file_path
     df = pd.read_csv(file_path, skipinitialspace=True)
     st.success(f"File '{file_path}' caricato con successo.")
-
 
     # --- Gestione Colonne ---
     colonne_essenziali = [colonna_sq_a, colonna_sq_b, colonna_data, colonna_quota, colonna_stake, colonna_esito]
@@ -130,7 +149,15 @@ try:
     df_cleaned = df.copy()
 
     # --- Pulizia Specifica per Colonna ---
-    df_cleaned[colonna_data] = df_cleaned[colonna_data].apply(parse_italian_date)
+    df_cleaned[colonna_data] = df_cleaned[colonna_data].apply(parse_italian_date) # Usa la nuova funzione
+    # --- Verifica Date Non Valide (Opzionale, per Debug) ---
+    invalid_dates_count = df_cleaned[colonna_data].isna().sum()
+    if invalid_dates_count > 0:
+        st.warning(f"Attenzione: {invalid_dates_count} righe hanno una data non valida dopo il parsing e potrebbero essere escluse dalle analisi temporali.")
+        # Potresti voler vedere quali righe sono:
+        # st.dataframe(df_cleaned[df_cleaned[colonna_data].isna()])
+    # --- Fine Verifica ---
+
     cols_to_clean_numeric = [colonna_quota, colonna_stake, colonna_prob, colonna_edge, colonna_media_pt_stimati, colonna_confidenza, colonna_ris_finale]
     for col in cols_to_clean_numeric:
         if col in df_cleaned.columns: df_cleaned[col] = df_cleaned[col].apply(clean_numeric_value)
@@ -151,7 +178,10 @@ try:
         df_cleaned.loc[valid_error_calc, 'Errore_Sovrastima_PT'] = diff.clip(lower=0)
 
     # --- Preparazione Dati Globali (pre-filtro sidebar) ---
-    df_results_global = df_cleaned[df_cleaned['Esito_Standard'].isin(['Win', 'Loss']) & df_cleaned[colonna_data].notna()].copy()
+    # Filtra per date valide PRIMA di calcolare drawdown e cumulativo globale
+    df_cleaned_valid_dates = df_cleaned[df_cleaned[colonna_data].notna()].copy()
+
+    df_results_global = df_cleaned_valid_dates[df_cleaned_valid_dates['Esito_Standard'].isin(['Win', 'Loss'])].copy()
     df_results_global = df_results_global.sort_values(by=colonna_data)
     if not df_results_global.empty:
         df_results_global['Cumulative P/L'] = df_results_global['P/L'].fillna(0).cumsum()
@@ -163,25 +193,26 @@ try:
 
     # --- Inizio App Streamlit ---
     st.sidebar.header("Filtri")
-    unique_outcomes = df_cleaned['Esito_Standard'].unique()
+    unique_outcomes = df_cleaned['Esito_Standard'].unique() # Usa df_cleaned per mostrare tutti gli esiti possibili
     options_outcomes = unique_outcomes
     selected_outcomes = st.sidebar.multiselect("Filtra per Esito", options=options_outcomes, default=list(options_outcomes))
     start_date, end_date = None, None
-    if colonna_data in df_cleaned.columns and df_cleaned[colonna_data].notna().any():
-        valid_dates = df_cleaned[colonna_data].dropna()
-        if not valid_dates.empty:
-            min_date = valid_dates.min().date(); max_date = valid_dates.max().date()
-            if min_date != max_date :
-                 selected_date_range = st.sidebar.date_input(f"Filtra per {colonna_data}", value=(min_date, max_date), min_value=min_date, max_value=max_date)
-                 if len(selected_date_range) == 2: start_date, end_date = selected_date_range
-                 elif len(selected_date_range) == 1: start_date = end_date = selected_date_range[0]
-            else:
-                st.sidebar.info(f"Tutti i dati sono relativi al {min_date.strftime('%d/%m/%Y')}")
-                start_date = end_date = min_date
+    # Usa df_cleaned_valid_dates per determinare il range del filtro data
+    if colonna_data in df_cleaned_valid_dates.columns and not df_cleaned_valid_dates.empty:
+        min_date = df_cleaned_valid_dates[colonna_data].min().date(); max_date = df_cleaned_valid_dates[colonna_data].max().date()
+        if min_date != max_date :
+             selected_date_range = st.sidebar.date_input(f"Filtra per {colonna_data}", value=(min_date, max_date), min_value=min_date, max_value=max_date)
+             if len(selected_date_range) == 2: start_date, end_date = selected_date_range
+             elif len(selected_date_range) == 1: start_date = end_date = selected_date_range[0]
+        else:
+            st.sidebar.info(f"Tutti i dati validi sono relativi al {min_date.strftime('%d/%m/%Y')}")
+            start_date = end_date = min_date
 
     # --- Applicazione Filtri ---
-    df_filtered_final = df_cleaned.copy()
-    df_results_filtered_final = df_results_global.copy()
+    # Inizia dai dati con date valide
+    df_filtered_final = df_cleaned_valid_dates.copy()
+    df_results_filtered_final = df_results_global.copy() # Contiene già solo W/L con date valide
+
     if selected_outcomes:
         df_filtered_final = df_filtered_final[df_filtered_final['Esito_Standard'].isin(selected_outcomes)]
         df_results_filtered_final = df_results_filtered_final[df_results_filtered_final['Esito_Standard'].isin(selected_outcomes)]
@@ -238,19 +269,15 @@ try:
         # --- Visualizzazione Metriche (Usa format_currency) ---
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Scommesse Concluse (W/L)", f"{total_bets_wl}")
-        # --- MODIFICA: Usa la nuova funzione per formattare ---
         col2.metric(f"{colonna_stake} Totale (W/L)", format_currency(total_stake_wl))
         col3.metric(f"P/L Totale (W/L)", format_currency(total_pl_wl))
-        # --- FINE MODIFICA ---
         col4.metric("Sovrastima Media PT", f"{avg_overestimation_error:.2f}" if pd.notna(avg_overestimation_error) else "N/D",
                     help=f"Media di ({colonna_media_pt_stimati} - {colonna_ris_finale}) solo quando la stima era superiore al risultato finale.")
 
         col5, col6, col7 = st.columns(3)
         col5.metric("ROI (W/L)", f"{roi_wl:.2f}%" if pd.notna(roi_wl) else "N/D")
         col6.metric("Win Rate (W/L)", f"{win_rate_wl:.1%}" if pd.notna(win_rate_wl) else "N/D")
-        # --- MODIFICA: Usa la nuova funzione per formattare ---
         col7.metric(f"{colonna_stake} Medio (W/L)", format_currency(avg_stake_wl))
-        # --- FINE MODIFICA ---
 
         if most_winning_quota_data:
             st.markdown("---")
@@ -265,13 +292,13 @@ try:
         st.subheader("Indicatori Rischio/Performance")
         with st.container(border=True):
              r_col1, r_col2, r_col3 = st.columns(3)
-             # --- MODIFICA: Usa la nuova funzione per formattare ---
              r_col1.metric("Max Drawdown Storico (€)", format_currency(max_drawdown_global), help="Massima perdita storica dal picco precedente (calcolata su tutti i dati).")
              r_col2.metric("Sharpe Ratio (Giornaliero)", f"{sharpe_ratio_daily:.2f}" if pd.notna(sharpe_ratio_daily) else "N/D", help="Basato su P/L giornaliero dei dati filtrati. Risk-free rate = 0.")
              r_col3.metric("VaR Storico 95% (Giornaliero)", format_currency(var_95_daily), help="Perdita giornaliera massima attesa nel 5% dei casi peggiori (basata sui dati filtrati).")
-             # --- FINE MODIFICA ---
         st.markdown("---")
 
+        # --- Visualizzazioni con Stile Aggiornato ---
+        # ... (il resto del codice per i grafici e la tabella rimane invariato) ...
         # --- Visualizzazioni con Stile Aggiornato ---
         st.subheader("Visualizzazioni Grafiche")
 
@@ -306,14 +333,10 @@ try:
                 fig_daily.add_trace(go.Bar(x=daily_summary_chart[colonna_data], y=daily_summary_chart['Daily_PL'], name='P/L Giornaliero (€)', marker_color=colors_pl, marker_line_width=0, yaxis='y1'), secondary_y=False)
                 fig_daily.add_trace(go.Scatter(x=daily_summary_chart[colonna_data], y=daily_summary_chart['Num_Bets'], name='Num. Scommesse', mode='lines+markers', line=dict(color=color_line1, shape='spline', smoothing=0.7), marker=dict(size=5), yaxis='y2'), secondary_y=True)
                 fig_daily.update_layout(title_text="Risultato Netto (€) e Num. Scommesse per Giorno (Periodo Filtrato)", xaxis_title="Data", yaxis_title="P/L Netto Giornaliero (€)", yaxis2_title="Numero Scommesse", legend_title="Legenda", barmode='relative', template='plotly_white')
-                # --- MODIFICA: Usa format_currency per tick asse Y P/L ---
-                # Nota: tickformat potrebbe sovrascrivere la formattazione completa del locale,
-                # quindi usiamo un approccio diverso se il locale non è impostato.
                 if italian_locale_set:
-                    fig_daily.update_yaxes(title_text="P/L Netto Giornaliero (€)", tickformat="~€", secondary_y=False, showgrid=False) # Formato valuta approssimativo per tick
+                    fig_daily.update_yaxes(title_text="P/L Netto Giornaliero (€)", tickformat="~€", secondary_y=False, showgrid=False)
                 else:
-                    fig_daily.update_yaxes(title_text="P/L Netto Giornaliero (€)", ticksuffix=" €", secondary_y=False, showgrid=False) # Aggiunge solo simbolo
-                # --- FINE MODIFICA ---
+                    fig_daily.update_yaxes(title_text="P/L Netto Giornaliero (€)", ticksuffix=" €", secondary_y=False, showgrid=False)
                 fig_daily.update_yaxes(title_text="Numero Scommesse", secondary_y=True, showgrid=False); fig_daily.update_xaxes(showgrid=False)
                 st.plotly_chart(fig_daily, use_container_width=True); st.caption("Mostra il P/L netto giornaliero e il numero di scommesse concluse.")
             else: st.info("Nessun dato giornaliero aggregato.")
@@ -325,12 +348,10 @@ try:
         if not df_results_filtered_final.empty and 'Cumulative P/L Filtered' in df_results_filtered_final.columns and df_results_filtered_final['Cumulative P/L Filtered'].notna().any():
             fig_cum_pl = px.line(df_results_filtered_final, x=colonna_data, y='Cumulative P/L Filtered', title="Andamento P/L Cumulativo (€) - Periodo Filtrato", markers=False)
             fig_cum_pl.update_traces(line=dict(color=color_line2, shape='spline', smoothing=0.7)); fig_cum_pl.update_layout(template='plotly_white')
-             # --- MODIFICA: Usa format_currency per tick asse Y P/L ---
             if italian_locale_set:
                  fig_cum_pl.update_yaxes(title="P/L Cumulativo (€)", showgrid=False, tickformat="~€")
             else:
                  fig_cum_pl.update_yaxes(title="P/L Cumulativo (€)", showgrid=False, ticksuffix=" €")
-            # --- FINE MODIFICA ---
             fig_cum_pl.update_xaxes(title="Data", showgrid=False)
             st.plotly_chart(fig_cum_pl, use_container_width=True); st.caption("Mostra l'evoluzione del P/L totale nel tempo per il periodo selezionato.")
         else: st.info("Nessun dato P/L per grafico cumulativo filtrato.")
@@ -376,20 +397,16 @@ try:
                  st.subheader(f"Relazione {colonna_prob} vs P/L (Win/Loss)")
                  df_plot_prob_pl = df_results_filtered_final[df_results_filtered_final[colonna_prob].notna()].copy()
                  if not df_plot_prob_pl.empty:
-                     # --- MODIFICA: Usa format_currency per tooltip ---
                      df_plot_prob_pl['Stake Formattato'] = df_plot_prob_pl[colonna_stake].apply(format_currency)
                      df_plot_prob_pl['P/L Formattato'] = df_plot_prob_pl['P/L'].apply(format_currency)
-                     # --- FINE MODIFICA ---
                      df_plot_prob_pl['Prob Formattata'] = df_plot_prob_pl[colonna_prob].map(lambda x: f"{x:.1%}" if pd.notna(x) else 'N/A')
                      fig_prob_pl = px.scatter(df_plot_prob_pl, x=colonna_prob, y='P/L', color='Esito_Standard', title="P/L vs. Probabilità Stimata (Periodo Filtrato)", labels={colonna_prob: 'Probabilità Stimata', 'P/L': 'P/L (€)', 'Esito_Standard': 'Esito'}, hover_name=colonna_sq_a, hover_data={colonna_sq_b:True, colonna_quota:':.2f', 'Stake Formattato': True, 'P/L Formattato':True, 'Prob Formattata':True, colonna_prob:False, 'P/L':False}, color_discrete_map=color_map_esiti)
                      fig_prob_pl.update_traces(marker=dict(line=dict(width=0))); fig_prob_pl.update_layout(template='plotly_white')
                      fig_prob_pl.update_xaxes(title="Probabilità Stimata", showgrid=False, tickformat=".1%")
-                     # --- MODIFICA: Usa format_currency per tick asse Y P/L ---
                      if italian_locale_set:
                          fig_prob_pl.update_yaxes(title="P/L (€)", showgrid=False, tickformat="~€")
                      else:
                          fig_prob_pl.update_yaxes(title="P/L (€)", showgrid=False, ticksuffix=" €")
-                     # --- FINE MODIFICA ---
                      st.plotly_chart(fig_prob_pl, use_container_width=True); st.caption("Esplora la correlazione tra probabilità stimata e P/L.")
                  else: st.info("Nessun dato W/L con Probabilità Stimata valida.")
              else: st.info(f"Colonna '{colonna_prob}' non disponibile.")
@@ -401,12 +418,10 @@ try:
                  if not df_plot_stake.empty:
                      fig_stake_hist = px.histogram(df_plot_stake, x=colonna_stake, nbins=15, title="Distribuzione Stake (€) (Periodo Filtrato)", labels={colonna_stake: 'Importo Puntato (€)'}, color_discrete_sequence=[color_line1])
                      fig_stake_hist.update_traces(marker_line_width=0); fig_stake_hist.update_layout(template='plotly_white', bargap=0.1); fig_stake_hist.update_yaxes(title="Numero Scommesse", showgrid=False)
-                     # --- MODIFICA: Usa format_currency per tick asse X Stake ---
                      if italian_locale_set:
                          fig_stake_hist.update_xaxes(title="Importo Puntato (€)", showgrid=False, tickformat="~€")
                      else:
                          fig_stake_hist.update_xaxes(title="Importo Puntato (€)", showgrid=False, ticksuffix=" €")
-                     # --- FINE MODIFICA ---
                      st.plotly_chart(fig_stake_hist, use_container_width=True); st.caption("Mostra come si distribuiscono gli importi puntati.")
                  else: st.info("Nessuna puntata valida (> 0 €).")
               else: st.info(f"Colonna '{colonna_stake}' non disponibile.")
@@ -418,17 +433,13 @@ try:
         df_display_filtered = df_filtered_final.copy()
         def safe_format(value, format_str): return format(value, format_str) if pd.notna(value) else ""
         cols_to_format_percent = [colonna_prob, colonna_edge]
-        # --- MODIFICA: Usa format_currency per la tabella ---
         cols_to_format_currency_in_table = [colonna_stake, 'P/L']
-        # --- FINE MODIFICA ---
         cols_to_format_points = [colonna_media_pt_stimati, colonna_ris_finale, colonna_confidenza, 'Errore_Sovrastima_PT']
         for col in cols_to_format_percent:
              if col in df_display_filtered.columns: df_display_filtered[col] = pd.to_numeric(df_display_filtered[col], errors='coerce').map(lambda x: safe_format(x, '.1%'))
-        # --- MODIFICA: Applica format_currency alla tabella ---
         for col in cols_to_format_currency_in_table:
              if col in df_display_filtered.columns:
                  df_display_filtered[col] = pd.to_numeric(df_display_filtered[col], errors='coerce').apply(format_currency)
-        # --- FINE MODIFICA ---
         for col in cols_to_format_points:
              if col in df_display_filtered.columns: df_display_filtered[col] = pd.to_numeric(df_display_filtered[col], errors='coerce').map(lambda x: safe_format(x, '.1f'))
         if colonna_quota in df_display_filtered.columns: df_display_filtered[colonna_quota] = pd.to_numeric(df_display_filtered[colonna_quota], errors='coerce').map(lambda x: safe_format(x, '.2f'))
@@ -470,9 +481,7 @@ except KeyError as e:
         st.info(f"Colonne lette: {df.columns.tolist()}")
     st.stop()
 except Exception as e:
-    # Mostra l'errore specifico ma non interrompere bruscamente se possibile
     st.error(f"ERRORE IMPREVISTO: {e}")
-    # Potresti voler commentare st.exception(e) in produzione per non mostrare tutto il traceback
-    st.exception(e)
-    # Considera se vuoi fermare l'app o provare a continuare mostrando solo un errore
-    # st.stop() # Decommenta se preferisci fermare l'app in caso di qualsiasi errore
+    # Rimuovi o commenta st.exception(e) per non mostrare il traceback completo in produzione
+    # st.exception(e)
+    st.stop() # Ferma l'app in caso di errore imprevisto

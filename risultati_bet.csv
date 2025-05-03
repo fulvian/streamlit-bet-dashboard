@@ -1,0 +1,40 @@
+Squadra A,Squadra B,Data,Ora,Quota,Stake,Media Punti Stimati,Probabilita Stimata,Edge Value,Confidenza,Punteggio finale,Esito
+Golden State Warriors,Houston Rockets,1 Mag 2025,01:30,1.71,1.70,208.4,68.5,17.1,Alta,247,W
+Minnesota Timberwolves,Los Angeles Lakers,1 Mag 2025,04:00,1.71,2.00,217.2,69.2,20.3,Alta,199,L
+Milwaukee Bucks,Indiana Pacers,30 Apr 2025,00:00 CET,1.71,1.70,226.9,68.2,9.7,Alta,237,W
+Detroit Pistons,New York Knicks,30 Apr 2025,01:30,1.71,1.70,221.5,65.2,6.7,Alta,209,L
+Orlando Magic,Boston Celtics,30 Apr 2025,02:30 UTC,1.71,2.00,,76.4,30.7,Alta,209,W
+LA Clippers,Denver Nuggets,30 Apr 2025,04:00,1.71,2.00,213.9,68.2,16.7,Alta,246,W
+Cleveland Cavaliers,Miami Heat,29 Apr 2025,01:30,1.80,1.40,,63.0,7.4,,,W
+Houston Rockets,Golden State Warr.,29 Apr 2025,04:00,1.80,2.00,,75.2,35.4,,,W
+Boston Celtics,Orlando Magic,28 Apr 2025,01:00,1.80,1.70,,68.5,12.9,,,W
+Los Angeles Lakers,Minnesota Timb.,27 Apr 2025,21:30,1.80,1.40,,61.9,11.4,,,W
+Houston Rockets,Golden State Warr.,27 Apr 2025,02:30,1.76,2.00,,78.0,15.6,,,L
+Oklahoma City Thunder,Memphis Grizzlies,26 Apr 2025,21:30,1.74,1.40,,61.7,7.5,,,W
+Miami Heat,Chicago Bulls,17 Apr 2025,01:30,1.71,2.00,,63.8,9.1,,,L
+Charlotte Hornets,Boston Celtics,13 Apr 2025,19:10,1.76,1.9,,60,5.4,,,L
+Detroit Pistons,Milwaukee Bucks,13 Apr 2025,19:10,1.80,1.9,,58,4.4,,,W
+Indiana Pacers,Cleveland Cavaliers,13 Apr 2025,19:10,1.80,1.9,,59,6.2,,,W
+New York Knicks,Brooklyn Nets,13 Apr 2025,19:10,1.80,1.9,,58,4.4,,,W
+Orlando Magic,Atlanta Hawks,13 Apr 2025,19:10,1.80,1.9,,58,4.4,,,W
+Washington Wizards,Miami Heat,13 Apr 2025,19:10,1.80,1.9,,58,4.4,,,W
+Dallas Mavericks,Memphis Grizzlies,13 Apr 2025,21:40,1.80,1.9,,58,4.4,,,W
+Denver Nuggets,Houston Rockets,13 Apr 2025,21:40,1.80,1.9,,58,4.4,,,W
+Los Angeles Clippers,Golden State Warr.,13 Apr 2025,21:40,1.80,1.9,,58,4.4,,,W
+Los Angeles Lakers,Portland Trail Blaz,13 Apr 2025,21:40,1.80,1.9,,58,4.4,,,L
+Toronto Raptors,San Antonio Spurs,13 Apr 2025,21:30,1.80,1.9,,58,4.4,,,W
+Washington Wizards,Chicago Bulls,12 Apr 2025,,1.76,1.37,,58.0,1.18,,,L
+Chicago Bulls,Miami Heat,10 Apr 2025,,1.76,3.00,,60.0,,,,W
+MEM Grizzlies,CHA Hornets,09 Apr 2025,,1.76,,,,,,,L
+WAS Wizards,IND Pacers,09 Apr 2025,,1.76,,,,,,,L 
+BOS Celtics,NY Knicks,09 Apr 2025,,1.76,,,,,,,W
+LA Lakers,OKC Thunder,09 Apr 2025,,1.76,,,,,,,W
+SA Spurs,LA Clippers,09 Apr 2025,,1.76,,,,,,,W
+SAC Kings,DET Pistons,08 Apr 2025,,1.71,,,,,,,W
+Chicago Bulls,Charlotte Hornets,06 Apr 2025,,1.80,2.30,,50.6,,,,W
+MIN Timberwolves,PHI 76ers,06 Apr 2025,,1.80,,,,,,,L
+CLE Cavaliers,SA Spurs,05 Apr 2025,,1.71,,,,,,,L
+NY Knicks,ATL Hawks,05 Apr 2025,,1.80,,,,,,,L
+New York Knicks,Detroit Pistons,2 Mag 2025,01:30,1.80,1.70,215.8,61.2,10.2,Alta,229,W
+Denver Nuggets,LA Clippers,2 Mag 2025,04:00,1.71,2.40,218.5,68.8,17.7,Alta,216,W
+Houston Rockets,Golden State Warriors,2 Mag 2025,21:00,1.71,2.00,214.2,85.0,45.9,Alta,222,W

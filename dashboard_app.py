@@ -284,6 +284,36 @@ try:
                 if 'Quota_BE' in df_results_filtered_final.columns:
                     avg_be_quota = df_results_filtered_final['Quota_BE'].mean(skipna=True)
 
+                # ---- INIZIO MODIFICA: Calcolo Deviazione Standard Differenza Punteggi per Partite Perse ----
+                std_dev_score_diff_loss = np.nan # Inizializza a NaN
+                # Assicurati che le colonne necessarie esistano nel dataframe filtrato
+                if not df_results_filtered_final.empty and \
+                   colonna_ris_finale in df_results_filtered_final.columns and \
+                   colonna_media_pt_stimati in df_results_filtered_final.columns:
+
+                    # Filtra per partite perse (Loss) e dove i punteggi sono disponibili
+                    # Usiamo .copy() per evitare SettingWithCopyWarning quando aggiungiamo la nuova colonna
+                    df_loss_scores_for_std = df_results_filtered_final[
+                        (df_results_filtered_final['Esito_Standard'] == 'Loss') &
+                        (df_results_filtered_final[colonna_ris_finale].notna()) &
+                        (df_results_filtered_final[colonna_media_pt_stimati].notna())
+                    ].copy()
+
+                    if not df_loss_scores_for_std.empty:
+                        # Calcola la differenza: Risultato Finale - Media Punti Stimati
+                        # Una differenza positiva significa che il risultato finale è stato SUPERIORE alla stima
+                        # Una differenza negativa significa che il risultato finale è stato INFERIORE alla stima
+                        df_loss_scores_for_std['Differenza_Punteggio_Loss'] = df_loss_scores_for_std[colonna_ris_finale] - df_loss_scores_for_std[colonna_media_pt_stimati]
+
+                        # Calcola la deviazione standard della differenza
+                        # ddof=1 per la deviazione standard campionaria
+                        if len(df_loss_scores_for_std['Differenza_Punteggio_Loss']) >= 2: # La deviazione standard richiede almeno 2 punti dati
+                            std_dev_score_diff_loss = df_loss_scores_for_std['Differenza_Punteggio_Loss'].std(ddof=1)
+                        elif len(df_loss_scores_for_std['Differenza_Punteggio_Loss']) == 1:
+                             std_dev_score_diff_loss = 0.0 # Se c'è solo un punto dati, la deviazione standard è 0
+                        # Se 'Differenza_Punteggio_Loss' è vuota (ma df_loss_scores_for_std non lo era), std_dev_score_diff_loss rimane np.nan
+                # ---- FINE MODIFICA: Calcolo Deviazione Standard ----
+
                 # ---- Calcolo Sharpe Ratio Avanzato ----
                 # Ottieni tutti i giorni nel periodo (inclusi quelli senza scommesse)
                 if start_date and end_date:
@@ -375,6 +405,11 @@ try:
         col5.metric("ROI (W/L)", f"{roi_wl:.2f}%" if pd.notna(roi_wl) else "N/D")
         col6.metric("Win Rate (W/L)", f"{win_rate_wl:.1%}" if pd.notna(win_rate_wl) else "N/D")
         col7.metric(f"{colonna_stake} Medio (W/L)", format_currency(avg_stake_wl))
+        # --- INIZIO MODIFICA: Visualizzazione Nuova Metrica ---
+        col8.metric("Dev. Std. Diff. Punti (Loss)",
+                    f"{std_dev_score_diff_loss:.2f}" if pd.notna(std_dev_score_diff_loss) else "N/D",
+                    help=f"Deviazione standard della differenza ({colonna_ris_finale} - {colonna_media_pt_stimati}) per le sole partite perse (L) con dati di punteggio disponibili.")
+        # --- FINE MODIFICA: Visualizzazione Nuova Metrica ---
 
         # Nuove metriche strategiche
         with col_header[0]: # Questo with era già presente e corretto

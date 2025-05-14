@@ -842,10 +842,39 @@ try:
                 )
                 fig_edge_prob.update_traces(marker=dict(line=dict(width=0)))
                 fig_edge_prob.update_layout(template='plotly_white')
-                fig_edge_prob.update_xaxes(title="Edge Value", showgrid=False, tickformat=".1%")
-                fig_edge_prob.update_yaxes(title="Probabilità Stimata", showgrid=False, tickformat=".1%")
+                fig_edge_prob.update_xaxes(title="Edge Value", showgrid=False, tickformat=".0%") # Mostra come X%
+                fig_edge_prob.update_yaxes(title="Probabilità Stimata", showgrid=False, tickformat=".0%") # Mostra come X%
+
+                # MODIFICA: Aggiunta linee divisorie tratteggiate ogni 5%
+                # Linee verticali per Edge Value (asse X)
+                # Determina dinamicamente il range per le linee verticali basato sui dati, con step di 0.05
+                min_edge_val = 0.0
+                max_edge_val = df_plot_edge_prob[colonna_edge].max() if not df_plot_edge_prob.empty else 0.3 # Fallback a 30%
+                if pd.notna(max_edge_val):
+                    for val in np.arange(0.05, max_edge_val + 0.05, 0.05): # Inizia da 0.05 (5%)
+                         # Non disegnare la linea se è troppo vicina a 0 per evitare sovrapposizione con l'asse
+                        if val > 0.001 : fig_edge_prob.add_vline(x=val, line_dash="dash", line_color="lightgray", opacity=0.7)
+
+
+                # Linee orizzontali per Probabilità Stimata (asse Y)
+                # Determina dinamicamente il range per le linee orizzontali basato sui dati, con step di 0.05
+                min_prob_val = df_plot_edge_prob[colonna_prob].min() if not df_plot_edge_prob.empty else 0.4 # Fallback a 40%
+                max_prob_val = df_plot_edge_prob[colonna_prob].max() if not df_plot_edge_prob.empty else 1.0 # Fallback a 100%
+
+                # Arrotonda min_prob_val al multiplo di 0.05 più vicino verso il basso, ma non meno di 0.05
+                if pd.notna(min_prob_val):
+                    start_prob_line = max(0.05, np.floor(min_prob_val / 0.05) * 0.05)
+                else:
+                    start_prob_line = 0.4
+
+                if pd.notna(max_prob_val) and pd.notna(start_prob_line):
+                     for val in np.arange(start_prob_line, max_prob_val + 0.05, 0.05):
+                         # Non disegnare la linea se è troppo vicina a 0 o 1 per evitare sovrapposizione con i bordi del grafico
+                         if val > 0.001 and val < 0.999: fig_edge_prob.add_hline(y=val, line_dash="dash", line_color="lightgray", opacity=0.7)
+
+
                 st.plotly_chart(fig_edge_prob, use_container_width=True)
-                st.caption(f"Mostra la relazione tra l'{colonna_edge} e la {colonna_prob}, colorata per esito della scommessa.")
+                st.caption(f"Mostra la relazione tra l'{colonna_edge} e la {colonna_prob}, colorata per esito della scommessa. Le linee tratteggiate indicano intervalli del 5%.")
             else:
                 st.info(f"Nessun dato valido (con {colonna_edge}, {colonna_prob} e esito W/L) per questo grafico.")
             st.markdown("---")
@@ -871,102 +900,110 @@ try:
 
 
                 if not df_prediction.empty and df_prediction[colonna_prob].min() < 1.0 and df_prediction[colonna_prob].max() > 0 : # Assicurati che ci siano dati e che le probabilità siano valide
-                    prob_bins = [0, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0]
-                    prob_labels = ['<50%','50-55%', '55-60%', '60-65%', '65-70%', '70-75%', '75-80%', '80-85%', '85-90%', '90-95%', '95-100%']
+                    prob_bins_def = [0, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0]
+                    prob_labels_def = ['<50%','50-55%', '55-60%', '60-65%', '65-70%', '70-75%', '75-80%', '80-85%', '85-90%', '90-95%', '95-100%']
 
-                    # Se il minimo è >= 0.5, escludi il primo bin e label
+                    current_prob_bins = prob_bins_def
+                    current_prob_labels = prob_labels_def
+
                     min_prob_data = df_prediction[colonna_prob].min()
                     if pd.notna(min_prob_data) and min_prob_data >= 0.5:
-                        # Trova l'indice del primo bin che è maggiore o uguale al minimo dei dati
                         start_index = 0
-                        for i, p_bin in enumerate(prob_bins):
-                            if min_prob_data < p_bin:
-                                start_index = max(0, i-1) # Prendi il bin precedente per includere il minimo
+                        for i, p_bin_val in enumerate(prob_bins_def):
+                            if min_prob_data < p_bin_val:
+                                start_index = max(0, i -1)
                                 break
-                        prob_bins = prob_bins[start_index:]
-                        prob_labels = prob_labels[start_index:]
-
-
-                    df_prediction['Prob_Bin'] = pd.cut(
-                        df_prediction[colonna_prob],
-                        bins=prob_bins,
-                        labels=prob_labels if len(prob_bins) -1 == len(prob_labels) else False, # Se le label non corrispondono ai bin, non usarle
-                        include_lowest=True,
-                        right=True
-                    )
-
-
-                    # Calcola la precisione reale per ogni bin
-                    prediction_accuracy = df_prediction.groupby('Prob_Bin', observed=False).agg(
-                        Scommesse_Totali=('Esito_Standard', 'size'),
-                        Vincite=('Esito_Standard', lambda x: (x == 'Win').sum()),
-                        Prob_Media=(colonna_prob, 'mean')
-                    ).reset_index()
-
-
-                    prediction_accuracy['Precisione_Reale'] = prediction_accuracy['Vincite'] / prediction_accuracy['Scommesse_Totali']
-                    prediction_accuracy['Differenza'] = prediction_accuracy['Precisione_Reale'] - prediction_accuracy['Prob_Media']
-                    prediction_accuracy.dropna(subset=['Prob_Media', 'Precisione_Reale'], inplace=True)
-
-                    if not prediction_accuracy.empty:
-                        fig_calibration = go.Figure()
-                        perfect_cal_x_min = prediction_accuracy['Prob_Media'].min() if not prediction_accuracy.empty else 0.5
-                        perfect_cal_x_max = prediction_accuracy['Prob_Media'].max() if not prediction_accuracy.empty else 1.0
-                        perfect_cal_x = np.linspace(min(0.45, perfect_cal_x_min), max(1.0, perfect_cal_x_max), 10)
-
-
-                        fig_calibration.add_trace(
-                            go.Scatter(x=perfect_cal_x, y=perfect_cal_x, mode='lines', name='Calibrazione Perfetta',
-                                      line=dict(color='black', width=1, dash='dash'))
-                        )
-
-                        sizes = prediction_accuracy['Scommesse_Totali'].clip(lower=5) * 1.5
-                        fig_calibration.add_trace(
-                            go.Scatter(
-                                x=prediction_accuracy['Prob_Media'],
-                                y=prediction_accuracy['Precisione_Reale'],
-                                mode='markers+text',
-                                marker=dict(
-                                    size=sizes,
-                                    color=prediction_accuracy['Differenza'],
-                                    colorscale='RdYlGn',
-                                    cmid=0,
-                                    cmin=-0.2,
-                                    cmax=0.2,
-                                    colorbar=dict(title='Sovra/Sotto Stima'),
-                                    line=dict(width=1, color='black')
-                                ),
-                                text=prediction_accuracy['Prob_Bin'].astype(str), # Assicura che sia stringa per il testo
-                                textposition="top center",
-                                name='Calibrazione Reale',
-                                hovertemplate='<b>Bin: %{text}</b><br>Probabilità Media Stimata: %{x:.1%}<br>Precisione Reale (Win Rate): %{y:.1%}<br>Differenza: %{marker.color:+.1%}<br>Scommesse nel Bin: %{customdata[0]}<extra></extra>',
-                                customdata=prediction_accuracy[['Scommesse_Totali']]
-                            )
-                        )
-
-                        fig_calibration.update_layout(
-                            title='Calibrazione della Previsione: Probabilità Stimata vs. Precisione Reale',
-                            xaxis_title='Probabilità Media Stimata nel Bin',
-                            yaxis_title='Precisione Reale (Win Rate) nel Bin',
-                            template='plotly_white',
-                            xaxis=dict(tickformat='.0%', range=[min(0.45, perfect_cal_x_min -0.05) , max(1.0, perfect_cal_x_max+0.05)]),
-                            yaxis=dict(tickformat='.0%', range=[0, max(1.05, prediction_accuracy['Precisione_Reale'].max() + 0.05 if not prediction_accuracy.empty else 1.05)])
-                        )
-
-                        st.plotly_chart(fig_calibration, use_container_width=True)
-                        st.caption("Analisi della calibrazione: confronta la probabilità stimata con la frequenza reale di vincita per diversi intervalli di probabilità. I punti sopra la diagonale indicano sottostima della probabilità reale, sotto indicano sovrastima. Idealmente, i punti dovrebbero essere vicini alla linea diagonale.")
-
-                        st.markdown("##### Dettaglio Calibrazione Previsioni")
-                        display_accuracy = prediction_accuracy.copy()
-                        display_accuracy['Prob_Media'] = display_accuracy['Prob_Media'].map(lambda x: f"{x:.1%}" if pd.notna(x) else "N/A")
-                        display_accuracy['Precisione_Reale'] = display_accuracy['Precisione_Reale'].map(lambda x: f"{x:.1%}" if pd.notna(x) else "N/A")
-                        display_accuracy['Differenza'] = display_accuracy['Differenza'].map(lambda x: f"{x:+.1%}" if pd.notna(x) else "N/A")
-
-                        display_accuracy.columns = ['Range Probabilità Stimata', 'Totale Scommesse', 'Vincite', 'Prob. Media Stimata',
-                                                      'Precisione Reale', 'Differenza (Reale - Stimata)']
-                        st.dataframe(display_accuracy, use_container_width=True, hide_index=True)
+                        current_prob_bins = prob_bins_def[start_index:]
+                        current_prob_labels = prob_labels_def[start_index:]
+                    
+                    if not current_prob_bins or len(current_prob_bins) < 2: # Assicurati che ci siano almeno due bin per pd.cut
+                        st.info("Range di probabilità troppo ristretto per creare bin significativi.")
                     else:
-                        st.info("Nessun dato sufficiente per il grafico di calibrazione dopo il binning.")
+                        df_prediction['Prob_Bin'] = pd.cut(
+                            df_prediction[colonna_prob],
+                            bins=current_prob_bins,
+                            labels=current_prob_labels if len(current_prob_bins) -1 == len(current_prob_labels) else False, 
+                            include_lowest=True,
+                            right=True 
+                        )
+
+
+                        # Calcola la precisione reale per ogni bin
+                        prediction_accuracy = df_prediction.groupby('Prob_Bin', observed=False).agg(
+                            Scommesse_Totali=('Esito_Standard', 'size'),
+                            Vincite=('Esito_Standard', lambda x: (x == 'Win').sum()),
+                            Prob_Media=(colonna_prob, 'mean')
+                        ).reset_index()
+
+
+                        prediction_accuracy['Precisione_Reale'] = prediction_accuracy['Vincite'] / prediction_accuracy['Scommesse_Totali']
+                        prediction_accuracy['Differenza'] = prediction_accuracy['Precisione_Reale'] - prediction_accuracy['Prob_Media']
+                        prediction_accuracy.dropna(subset=['Prob_Media', 'Precisione_Reale'], inplace=True)
+
+                        if not prediction_accuracy.empty:
+                            fig_calibration = go.Figure()
+                            perfect_cal_x_min = prediction_accuracy['Prob_Media'].min() if not prediction_accuracy.empty else 0.5
+                            perfect_cal_x_max = prediction_accuracy['Prob_Media'].max() if not prediction_accuracy.empty else 1.0
+                            perfect_cal_x = np.linspace(min(0.45, perfect_cal_x_min), max(1.0, perfect_cal_x_max), 10)
+
+
+                            fig_calibration.add_trace(
+                                go.Scatter(x=perfect_cal_x, y=perfect_cal_x, mode='lines', name='Calibrazione Perfetta',
+                                          line=dict(color='black', width=1, dash='dash'))
+                            )
+
+                            sizes = prediction_accuracy['Scommesse_Totali'].clip(lower=5) * 1.5
+                            fig_calibration.add_trace(
+                                go.Scatter(
+                                    x=prediction_accuracy['Prob_Media'],
+                                    y=prediction_accuracy['Precisione_Reale'],
+                                    mode='markers+text',
+                                    marker=dict(
+                                        size=sizes,
+                                        color=prediction_accuracy['Differenza'],
+                                        colorscale='RdYlGn',
+                                        cmid=0,
+                                        cmin=-0.2,
+                                        cmax=0.2,
+                                        colorbar=dict(title='Sovra/Sotto Stima'),
+                                        line=dict(width=1, color='black')
+                                    ),
+                                    text=prediction_accuracy['Prob_Bin'].astype(str), 
+                                    textposition="top center",
+                                    name='Calibrazione Reale',
+                                    hovertemplate='<b>Bin: %{text}</b><br>Probabilità Media Stimata: %{x:.1%}<br>Precisione Reale (Win Rate): %{y:.1%}<br>Differenza: %{marker.color:+.1%}<br>Scommesse nel Bin: %{customdata[0]}<extra></extra>',
+                                    customdata=prediction_accuracy[['Scommesse_Totali']]
+                                )
+                            )
+
+                            y_axis_max = 1.05
+                            if not prediction_accuracy.empty and prediction_accuracy['Precisione_Reale'].notna().any():
+                                y_axis_max = max(1.05, prediction_accuracy['Precisione_Reale'].max() + 0.05)
+
+
+                            fig_calibration.update_layout(
+                                title='Calibrazione della Previsione: Probabilità Stimata vs. Precisione Reale',
+                                xaxis_title='Probabilità Media Stimata nel Bin',
+                                yaxis_title='Precisione Reale (Win Rate) nel Bin',
+                                template='plotly_white',
+                                xaxis=dict(tickformat='.0%', range=[min(0.45, perfect_cal_x_min -0.05) , max(1.0, perfect_cal_x_max+0.05)]),
+                                yaxis=dict(tickformat='.0%', range=[0, y_axis_max])
+                            )
+
+                            st.plotly_chart(fig_calibration, use_container_width=True)
+                            st.caption("Analisi della calibrazione: confronta la probabilità stimata con la frequenza reale di vincita per diversi intervalli di probabilità. I punti sopra la diagonale indicano sottostima della probabilità reale, sotto indicano sovrastima. Idealmente, i punti dovrebbero essere vicini alla linea diagonale.")
+
+                            st.markdown("##### Dettaglio Calibrazione Previsioni")
+                            display_accuracy = prediction_accuracy.copy()
+                            display_accuracy['Prob_Media'] = display_accuracy['Prob_Media'].map(lambda x: f"{x:.1%}" if pd.notna(x) else "N/A")
+                            display_accuracy['Precisione_Reale'] = display_accuracy['Precisione_Reale'].map(lambda x: f"{x:.1%}" if pd.notna(x) else "N/A")
+                            display_accuracy['Differenza'] = display_accuracy['Differenza'].map(lambda x: f"{x:+.1%}" if pd.notna(x) else "N/A")
+
+                            display_accuracy.columns = ['Range Probabilità Stimata', 'Totale Scommesse', 'Vincite', 'Prob. Media Stimata',
+                                                          'Precisione Reale', 'Differenza (Reale - Stimata)']
+                            st.dataframe(display_accuracy, use_container_width=True, hide_index=True)
+                        else:
+                            st.info("Nessun dato sufficiente per il grafico di calibrazione dopo il binning.")
                 else:
                     st.info("Probabilità stimate non valide o fuori range per l'analisi di calibrazione (es. tutte NaN, <0 o >= 1.0).")
             else:
@@ -1047,7 +1084,10 @@ try:
 
         if not df_results_filtered_final.empty and colonna_data in df_results_filtered_final.columns and df_results_filtered_final[colonna_data].notna().any():
             # Calcola metriche per finestra mobile (per vedere l'evoluzione)
-            window_size = st.slider("Finestra mobile (numero di scommesse)", min_value=5, max_value=min(50, len(df_results_filtered_final)), value=min(20, len(df_results_filtered_final)), # Max value dinamico
+            max_slider_val = len(df_results_filtered_final) if len(df_results_filtered_final) > 5 else 5
+            default_slider_val = min(20, max_slider_val)
+
+            window_size = st.slider("Finestra mobile (numero di scommesse)", min_value=5, max_value=max_slider_val, value=default_slider_val, 
                                   help="Numero di scommesse considerate per ogni punto della finestra mobile")
 
             if len(df_results_filtered_final) >= window_size:
@@ -1513,17 +1553,22 @@ try:
             """)
 
             col1_regr, col2_regr = st.columns(2) # Rinomina
-
+            
             # Parametri di input
-            num_simulations_regr = col1_regr.slider("Numero Simulazioni Monte Carlo", min_value=100, max_value=5000, value=1000, step=100, key="num_sim_regr") # Rinomina
-            future_bets_regr = col2_regr.slider("Scommesse Future per Simulazione", min_value=10, max_value=min(500, len(df_results_filtered_final) if not df_results_filtered_final.empty else 10), value=min(100, len(df_results_filtered_final) if not df_results_filtered_final.empty else 10), step=10, key="future_bets_regr") # Rinomina e max dinamico
+            # Rendi i max_value dei slider dinamici in base al numero di scommesse filtrate
+            max_sim_val = len(df_results_filtered_final) if not df_results_filtered_final.empty else 100
+            default_future_bets = min(100, max_sim_val if max_sim_val > 0 else 100)
+
+
+            num_simulations_regr = col1_regr.slider("Numero Simulazioni Monte Carlo", min_value=100, max_value=5000, value=1000, step=100, key="num_sim_regr") 
+            future_bets_regr = col2_regr.slider("Scommesse Future per Simulazione", min_value=10, max_value=max(10, max_sim_val), value=default_future_bets, step=10, key="future_bets_regr")
 
 
             if st.button("Esegui Simulazione di Regressione"):
                 if not df_results_filtered_final.empty and win_rate_wl is not None and pd.notna(win_rate_wl) and roi_wl is not None and pd.notna(roi_wl):
                     # Statistiche attuali dai dati filtrati
-                    current_win_rate_regr = win_rate_wl # Rinomina
-                    current_roi_regr = roi_wl / 100  # Converti ROI da % a frazione # Rinomina
+                    current_win_rate_regr = win_rate_wl 
+                    current_roi_regr = roi_wl / 100  # Converti ROI da % a frazione 
 
                     # Estrai le quote delle scommesse vinte e perse dai dati filtrati
                     winning_bets_filtered = df_results_filtered_final[df_results_filtered_final['Esito_Standard'] == 'Win']
@@ -1543,7 +1588,7 @@ try:
                     # Non serve campionare, la perdita unitaria è sempre -1
 
                     # Simulazione Monte Carlo
-                    simulation_roi_results = [] # Rinomina
+                    simulation_roi_results = [] 
 
                     for _ in range(num_simulations_regr):
                         sim_pl_total = 0
@@ -1566,16 +1611,16 @@ try:
 
 
                     # Analisi dei risultati
-                    simulation_roi_results_np = np.array(simulation_roi_results) # Rinomina
-                    avg_future_roi_regr = np.mean(simulation_roi_results_np) # Rinomina
-                    median_future_roi_regr = np.median(simulation_roi_results_np) # Rinomina
-                    std_future_roi_regr = np.std(simulation_roi_results_np) # Rinomina
-                    percentile_5_regr = np.percentile(simulation_roi_results_np, 5) # Rinomina
-                    percentile_95_regr = np.percentile(simulation_roi_results_np, 95) # Rinomina
+                    simulation_roi_results_np = np.array(simulation_roi_results) 
+                    avg_future_roi_regr = np.mean(simulation_roi_results_np) 
+                    median_future_roi_regr = np.median(simulation_roi_results_np) 
+                    std_future_roi_regr = np.std(simulation_roi_results_np) 
+                    percentile_5_regr = np.percentile(simulation_roi_results_np, 5) 
+                    percentile_95_regr = np.percentile(simulation_roi_results_np, 95) 
 
 
                     # Visualizzazione risultati
-                    res_col1_regr, res_col2_regr, res_col3_regr, res_col4_regr = st.columns(4) # Rinomina
+                    res_col1_regr, res_col2_regr, res_col3_regr, res_col4_regr = st.columns(4) 
                     res_col1_regr.metric("ROI Attuale (dati filtrati)", f"{current_roi_regr:.2%}")
                     res_col2_regr.metric("ROI Futuro Stimato (Media Sim.)", f"{avg_future_roi_regr:.2%}",
                                       f"{avg_future_roi_regr - current_roi_regr:+.2%}")
@@ -1584,7 +1629,7 @@ try:
 
 
                     # Visualizzazione distribuzione
-                    fig_dist_regr = go.Figure() # Rinomina
+                    fig_dist_regr = go.Figure() 
 
                     # Istogramma dei risultati
                     fig_dist_regr.add_trace(go.Histogram(

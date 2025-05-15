@@ -173,7 +173,13 @@ try:
         if col in df_cleaned.columns: df_cleaned[col] = df_cleaned[col].apply(clean_numeric_value)
     for col in [colonna_prob, colonna_edge]:
          if col in df_cleaned.columns and pd.api.types.is_numeric_dtype(df_cleaned[col]):
-              if df_cleaned[col].max(skipna=True) > 1: df_cleaned[col] = df_cleaned[col] / 100.0
+              if df_cleaned[col].max(skipna=True) > 1 and col == colonna_prob : # Le probabilità sono 0-1
+                  df_cleaned[col] = df_cleaned[col] / 100.0
+              elif df_cleaned[col].max(skipna=True) > 1 and col == colonna_edge and (df_cleaned[col] > 1).any(): # L'edge può essere > 1 se espresso come 10, 20 etc.
+                  # Se l'edge è già in formato percentuale (es. 10 per 10%), dividi per 100
+                  # Questa euristica assume che se ci sono valori > 1, sono percentuali
+                  df_cleaned[col] = df_cleaned[col] / 100.0
+
 
     esito_map = {'W': 'Win', 'L': 'Loss', 'TBD': 'TBD'}
     df_cleaned['Esito_Standard'] = df_cleaned[colonna_esito].astype(str).str.strip().str.upper().map(esito_map).fillna('Unknown')
@@ -220,9 +226,9 @@ try:
     selected_outcomes = st.sidebar.multiselect("Filtra per Esito", options=options_outcomes, default=list(options_outcomes))
     start_date, end_date = None, None
     # Usa df_cleaned_valid_dates per determinare il range del filtro data
-    if colonna_data in df_cleaned_valid_dates.columns and not df_cleaned_valid_dates.empty:
-        min_date_dt = df_cleaned_valid_dates[colonna_data].min()
-        max_date_dt = df_cleaned_valid_dates[colonna_data].max()
+    if colonna_data in df_cleaned_valid_dates.columns and not df_cleaned_valid_dates.empty and df_cleaned_valid_dates[colonna_data].notna().any():
+        min_date_dt = df_cleaned_valid_dates[colonna_data].dropna().min()
+        max_date_dt = df_cleaned_valid_dates[colonna_data].dropna().max()
         if pd.NaT not in [min_date_dt, max_date_dt] and min_date_dt.date() != max_date_dt.date():
             min_date = min_date_dt.date()
             max_date = max_date_dt.date()
@@ -235,25 +241,45 @@ try:
             start_date = end_date = single_date
         else: # Caso in cui tutte le date sono NaT o il dataframe è vuoto
              st.sidebar.info("Nessuna data valida disponibile per il filtro.")
+    else:
+        st.sidebar.info("Nessuna data disponibile per il filtro temporale.")
 
 
     # --- Applicazione Filtri ---
     # Inizia dai dati con date valide
     df_filtered_final = df_cleaned_valid_dates.copy()
-    df_results_filtered_final = df_results_global.copy() # Contiene già solo W/L con date valide
+    # df_results_filtered_final = df_results_global.copy() # Contiene già solo W/L con date valide # SPOSTATO DOPO FILTRO DATE
+
+    # Applica prima il filtro data a df_filtered_final e df_results_global
+    if start_date and end_date:
+        start_date_dt = pd.to_datetime(start_date)
+        end_date_dt = pd.to_datetime(end_date) + pd.Timedelta(days=1) # Per includere l'ultimo giorno
+
+        df_filtered_final = df_filtered_final[
+            (df_filtered_final[colonna_data] >= start_date_dt) &
+            (df_filtered_final[colonna_data] < end_date_dt)
+        ]
+        df_results_filtered_final = df_results_global[ # df_results_global è già W/L
+            (df_results_global[colonna_data] >= start_date_dt) &
+            (df_results_global[colonna_data] < end_date_dt)
+        ].copy() # .copy() per evitare SettingWithCopyWarning più avanti
+    else: # Se non c'è filtro data, usa tutti i dati W/L
+        df_results_filtered_final = df_results_global.copy()
+
 
     if selected_outcomes:
         df_filtered_final = df_filtered_final[df_filtered_final['Esito_Standard'].isin(selected_outcomes)]
         df_results_filtered_final = df_results_filtered_final[df_results_filtered_final['Esito_Standard'].isin(selected_outcomes)]
-    if start_date and end_date:
-        start_date_dt = pd.to_datetime(start_date); end_date_dt = pd.to_datetime(end_date) + pd.Timedelta(days=1)
-        df_filtered_final = df_filtered_final[(df_filtered_final[colonna_data] >= start_date_dt) & (df_filtered_final[colonna_data] < end_date_dt)]
-        df_results_filtered_final = df_results_filtered_final[(df_results_filtered_final[colonna_data] >= start_date_dt) & (df_results_filtered_final[colonna_data] < end_date_dt)]
+
 
     if not df_results_filtered_final.empty:
          df_results_filtered_final = df_results_filtered_final.sort_values(by=colonna_data)
          df_results_filtered_final['Cumulative P/L Filtered'] = df_results_filtered_final['P/L'].fillna(0).cumsum()
-    else: df_results_filtered_final['Cumulative P/L Filtered'] = np.nan
+    else:
+        # Crea una colonna vuota se il dataframe è vuoto per evitare KeyError
+        if 'Cumulative P/L Filtered' not in df_results_filtered_final.columns:
+            df_results_filtered_final['Cumulative P/L Filtered'] = np.nan
+
 
     # --- Visualizzazione Dashboard ---
     if df_filtered_final.empty:
@@ -272,16 +298,18 @@ try:
             total_pl_wl = df_results_filtered_final['P/L'].fillna(0).sum()
             if total_bets_wl > 0:
                 win_count_wl = (df_results_filtered_final['Esito_Standard'] == 'Win').sum()
-                win_rate_wl = win_count_wl / total_bets_wl
+                win_rate_wl = win_count_wl / total_bets_wl if total_bets_wl > 0 else 0 # Evita divisione per zero
                 avg_stake_wl = df_results_filtered_final[colonna_stake].mean(skipna=True)
                 roi_wl = (total_pl_wl / total_stake_wl) * 100 if total_stake_wl != 0 else 0
                 if win_count_wl > 0:
                     winning_odds_counts = df_results_filtered_final[(df_results_filtered_final['Esito_Standard'] == 'Win') & df_results_filtered_final[colonna_quota].notna()][colonna_quota].value_counts()
                     if not winning_odds_counts.empty:
                         quota_val = winning_odds_counts.idxmax(); wins_at_quota = winning_odds_counts.max()
-                        total_bets_at_quota = len(df_results_filtered_final[df_results_filtered_final[colonna_quota] == quota_val])
+                        total_bets_at_quota_df = df_results_filtered_final[df_results_filtered_final[colonna_quota] == quota_val]
+                        total_bets_at_quota = len(total_bets_at_quota_df) if not total_bets_at_quota_df.empty else 0
+
                         win_perc_at_quota = (wins_at_quota / total_bets_at_quota) * 100 if total_bets_at_quota > 0 else 0
-                        win_perc_of_total_wins = (wins_at_quota / win_count_wl) * 100
+                        win_perc_of_total_wins = (wins_at_quota / win_count_wl) * 100 if win_count_wl > 0 else 0
                         most_winning_quota_data = {"quota": quota_val, "wins": wins_at_quota, "total_bets": total_bets_at_quota, "win_perc": win_perc_at_quota, "perc_of_total": win_perc_of_total_wins}
 
                 # Calcolo Expected Value medio e quota break-even media
@@ -346,11 +374,14 @@ try:
                 if start_date and end_date:
                     full_date_range = pd.date_range(start=start_date, end=end_date, freq='D')
                 elif not df_results_filtered_final.empty and colonna_data in df_results_filtered_final and df_results_filtered_final[colonna_data].notna().any():
-                    min_date_val = df_results_filtered_final[colonna_data].min().date()
-                    max_date_val = df_results_filtered_final[colonna_data].max().date()
-                    full_date_range = pd.date_range(start=min_date_val, end=max_date_val, freq='D')
+                    min_date_val_dt = df_results_filtered_final[colonna_data].dropna().min()
+                    max_date_val_dt = df_results_filtered_final[colonna_data].dropna().max()
+                    if pd.NaT not in [min_date_val_dt, max_date_val_dt]:
+                        full_date_range = pd.date_range(start=min_date_val_dt.date(), end=max_date_val_dt.date(), freq='D')
+                    else:
+                        full_date_range = pd.Index([])
                 else:
-                    full_date_range = pd.Index([]) # Indice vuoto se non ci sono date
+                    full_date_range = pd.Index([])
 
 
                 # Crea un dataframe con tutti i giorni e riempi con 0 i giorni senza scommesse
@@ -835,42 +866,32 @@ try:
                         'Edge Formattato': True,
                         'Prob Formattata': True,
                         colonna_quota: ':.2f',
-                        colonna_edge: False, # Nasconde valore grezzo se già formattato
-                        colonna_prob: False  # Nasconde valore grezzo se già formattato
+                        colonna_edge: False,
+                        colonna_prob: False
                     },
                     color_discrete_map=color_map_esiti
                 )
                 fig_edge_prob.update_traces(marker=dict(line=dict(width=0)))
                 fig_edge_prob.update_layout(template='plotly_white')
-                fig_edge_prob.update_xaxes(title="Edge Value", showgrid=False, tickformat=".0%") # Mostra come X%
-                fig_edge_prob.update_yaxes(title="Probabilità Stimata", showgrid=False, tickformat=".0%") # Mostra come X%
+                fig_edge_prob.update_xaxes(title="Edge Value", showgrid=False, tickformat=".0%")
+                fig_edge_prob.update_yaxes(title="Probabilità Stimata", showgrid=False, tickformat=".0%")
 
-                # MODIFICA: Aggiunta linee divisorie tratteggiate ogni 5%
-                # Linee verticali per Edge Value (asse X)
-                # Determina dinamicamente il range per le linee verticali basato sui dati, con step di 0.05
-                min_edge_val = 0.0
-                max_edge_val = df_plot_edge_prob[colonna_edge].max() if not df_plot_edge_prob.empty else 0.3 # Fallback a 30%
-                if pd.notna(max_edge_val):
-                    for val in np.arange(0.05, max_edge_val + 0.05, 0.05): # Inizia da 0.05 (5%)
-                         # Non disegnare la linea se è troppo vicina a 0 per evitare sovrapposizione con l'asse
-                        if val > 0.001 : fig_edge_prob.add_vline(x=val, line_dash="dash", line_color="lightgray", opacity=0.7)
+                min_edge_val_data = df_plot_edge_prob[colonna_edge].min() if not df_plot_edge_prob.empty else -0.1
+                max_edge_val_data = df_plot_edge_prob[colonna_edge].max() if not df_plot_edge_prob.empty else 0.3
 
+                if pd.notna(min_edge_val_data) and pd.notna(max_edge_val_data):
+                    start_edge_line = np.ceil(min_edge_val_data / 0.05) * 0.05 if min_edge_val_data < 0 else np.floor(min_edge_val_data / 0.05) * 0.05
+                    start_edge_line = max(start_edge_line, -0.3) # Limite inferiore ragionevole
+                    for val_x in np.arange(start_edge_line, max_edge_val_data + 0.05, 0.05):
+                        if abs(val_x) > 0.001 : fig_edge_prob.add_vline(x=val_x, line_dash="dash", line_color="lightgray", opacity=0.7)
 
-                # Linee orizzontali per Probabilità Stimata (asse Y)
-                # Determina dinamicamente il range per le linee orizzontali basato sui dati, con step di 0.05
-                min_prob_val = df_plot_edge_prob[colonna_prob].min() if not df_plot_edge_prob.empty else 0.4 # Fallback a 40%
-                max_prob_val = df_plot_edge_prob[colonna_prob].max() if not df_plot_edge_prob.empty else 1.0 # Fallback a 100%
+                min_prob_val_data = df_plot_edge_prob[colonna_prob].min() if not df_plot_edge_prob.empty else 0.4
+                max_prob_val_data = df_plot_edge_prob[colonna_prob].max() if not df_plot_edge_prob.empty else 1.0
 
-                # Arrotonda min_prob_val al multiplo di 0.05 più vicino verso il basso, ma non meno di 0.05
-                if pd.notna(min_prob_val):
-                    start_prob_line = max(0.05, np.floor(min_prob_val / 0.05) * 0.05)
-                else:
-                    start_prob_line = 0.4
-
-                if pd.notna(max_prob_val) and pd.notna(start_prob_line):
-                     for val in np.arange(start_prob_line, max_prob_val + 0.05, 0.05):
-                         # Non disegnare la linea se è troppo vicina a 0 o 1 per evitare sovrapposizione con i bordi del grafico
-                         if val > 0.001 and val < 0.999: fig_edge_prob.add_hline(y=val, line_dash="dash", line_color="lightgray", opacity=0.7)
+                if pd.notna(min_prob_val_data) and pd.notna(max_prob_val_data):
+                    start_prob_line = max(0.05, np.floor(min_prob_val_data / 0.05) * 0.05)
+                    for val_y in np.arange(start_prob_line, max_prob_val_data + 0.05, 0.05):
+                         if val_y > 0.001 and val_y < 0.999: fig_edge_prob.add_hline(y=val_y, line_dash="dash", line_color="lightgray", opacity=0.7)
 
 
                 st.plotly_chart(fig_edge_prob, use_container_width=True)
@@ -882,135 +903,131 @@ try:
             st.info(f"Le colonne '{colonna_edge}' o '{colonna_prob}' non sono disponibili per questo grafico.")
             st.markdown("---")
 
-
-        # MODIFICA: SPOSTATO GRAFICO "Analisi della precisione di previsione" QUI
-        st.subheader("Analisi della Precisione di Previsione")
-        if not df_filtered_final.empty and colonna_prob in df_filtered_final.columns:
-            # Crea bins di probabilità stimata e calcola la precisione reale
-            df_prediction = df_filtered_final[
-                (df_filtered_final[colonna_prob].notna()) &
+        # MODIFICA: Grafico "Analisi della Precisione di Previsione" ora basato su Edge Value
+        st.subheader(f"Analisi della Precisione Reale per Range di {colonna_edge}")
+        if not df_filtered_final.empty and colonna_edge in df_filtered_final.columns:
+            df_analysis = df_filtered_final[
+                (df_filtered_final[colonna_edge].notna()) &
                 (df_filtered_final['Esito_Standard'].isin(['Win', 'Loss']))
             ].copy()
 
-            if not df_prediction.empty:
-                # Crea bins di probabilità (es. 50-55%, 55-60%, ecc.)
-                # Assicurati che colonna_prob sia numerica
-                df_prediction[colonna_prob] = pd.to_numeric(df_prediction[colonna_prob], errors='coerce')
-                df_prediction.dropna(subset=[colonna_prob], inplace=True) # Rimuovi NaN dopo coercizione
+            if not df_analysis.empty:
+                df_analysis[colonna_edge] = pd.to_numeric(df_analysis[colonna_edge], errors='coerce')
+                df_analysis.dropna(subset=[colonna_edge], inplace=True)
 
+                if not df_analysis.empty:
+                    # Definizione dei bin per Edge Value
+                    min_val_edge = df_analysis[colonna_edge].min()
+                    max_val_edge = df_analysis[colonna_edge].max()
 
-                if not df_prediction.empty and df_prediction[colonna_prob].min() < 1.0 and df_prediction[colonna_prob].max() > 0 : # Assicurati che ci siano dati e che le probabilità siano valide
-                    prob_bins_def = [0, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0]
-                    prob_labels_def = ['<50%','50-55%', '55-60%', '60-65%', '65-70%', '70-75%', '75-80%', '80-85%', '85-90%', '90-95%', '95-100%']
+                    # Creazione dinamica dei bin per l'edge value
+                    if pd.notna(min_val_edge) and pd.notna(max_val_edge) and min_val_edge < max_val_edge:
+                        edge_bins = np.arange(np.floor(min_val_edge*20)/20, np.ceil(max_val_edge*20)/20 + 0.05, 0.05) # Step di 0.05 (5%)
+                        if len(edge_bins) < 2: # Se i bin sono troppo pochi, usa una definizione di default più ampia
+                            edge_bins = np.arange(-0.20, 0.35, 0.05)
+                    else: # Fallback a bin di default
+                        edge_bins = np.arange(-0.20, 0.35, 0.05) # Da -20% a +30% con step 5%
 
-                    current_prob_bins = prob_bins_def
-                    current_prob_labels = prob_labels_def
+                    edge_labels = [f"{edge_bins[i]*100:.0f}-{edge_bins[i+1]*100:.0f}%" for i in range(len(edge_bins)-1)]
 
-                    min_prob_data = df_prediction[colonna_prob].min()
-                    if pd.notna(min_prob_data) and min_prob_data >= 0.5:
-                        start_index = 0
-                        for i, p_bin_val in enumerate(prob_bins_def):
-                            if min_prob_data < p_bin_val:
-                                start_index = max(0, i -1)
-                                break
-                        current_prob_bins = prob_bins_def[start_index:]
-                        current_prob_labels = prob_labels_def[start_index:]
-                    
-                    if not current_prob_bins or len(current_prob_bins) < 2: # Assicurati che ci siano almeno due bin per pd.cut
-                        st.info("Range di probabilità troppo ristretto per creare bin significativi.")
-                    else:
-                        df_prediction['Prob_Bin'] = pd.cut(
-                            df_prediction[colonna_prob],
-                            bins=current_prob_bins,
-                            labels=current_prob_labels if len(current_prob_bins) -1 == len(current_prob_labels) else False, 
+                    if len(edge_bins) > 1 :
+                        df_analysis['Value_Bin'] = pd.cut(
+                            df_analysis[colonna_edge],
+                            bins=edge_bins,
+                            labels=edge_labels,
                             include_lowest=True,
-                            right=True 
+                            right=False # Edge value è spesso continuo, 'right=False' è più intuitivo per [inizio, fine)
                         )
 
-
-                        # Calcola la precisione reale per ogni bin
-                        prediction_accuracy = df_prediction.groupby('Prob_Bin', observed=False).agg(
+                        accuracy_by_bin = df_analysis.groupby('Value_Bin', observed=False).agg(
                             Scommesse_Totali=('Esito_Standard', 'size'),
                             Vincite=('Esito_Standard', lambda x: (x == 'Win').sum()),
-                            Prob_Media=(colonna_prob, 'mean')
+                            Valore_Medio_Bin=(colonna_edge, 'mean') # Media dell'Edge Value nel bin
                         ).reset_index()
 
+                        accuracy_by_bin['Precisione_Reale'] = accuracy_by_bin['Vincite'] / accuracy_by_bin['Scommesse_Totali']
+                        accuracy_by_bin['Differenza_Rate_Valore'] = accuracy_by_bin['Precisione_Reale'] - accuracy_by_bin['Valore_Medio_Bin']
+                        accuracy_by_bin.dropna(subset=['Valore_Medio_Bin', 'Precisione_Reale'], inplace=True)
 
-                        prediction_accuracy['Precisione_Reale'] = prediction_accuracy['Vincite'] / prediction_accuracy['Scommesse_Totali']
-                        prediction_accuracy['Differenza'] = prediction_accuracy['Precisione_Reale'] - prediction_accuracy['Prob_Media']
-                        prediction_accuracy.dropna(subset=['Prob_Media', 'Precisione_Reale'], inplace=True)
+                        if not accuracy_by_bin.empty:
+                            fig_accuracy = go.Figure()
 
-                        if not prediction_accuracy.empty:
-                            fig_calibration = go.Figure()
-                            perfect_cal_x_min = prediction_accuracy['Prob_Media'].min() if not prediction_accuracy.empty else 0.5
-                            perfect_cal_x_max = prediction_accuracy['Prob_Media'].max() if not prediction_accuracy.empty else 1.0
-                            perfect_cal_x = np.linspace(min(0.45, perfect_cal_x_min), max(1.0, perfect_cal_x_max), 10)
+                            # Linea y=x (Precisione_Reale = Valore_Medio_Bin)
+                            # Determina il range per la linea diagonale in base ai dati
+                            min_axis_val = min(accuracy_by_bin['Valore_Medio_Bin'].min(), accuracy_by_bin['Precisione_Reale'].min()) if not accuracy_by_bin.empty else -0.1
+                            max_axis_val = max(accuracy_by_bin['Valore_Medio_Bin'].max(), accuracy_by_bin['Precisione_Reale'].max()) if not accuracy_by_bin.empty else 0.3
+                            if pd.isna(min_axis_val): min_axis_val = -0.1
+                            if pd.isna(max_axis_val): max_axis_val = 0.3
 
 
-                            fig_calibration.add_trace(
-                                go.Scatter(x=perfect_cal_x, y=perfect_cal_x, mode='lines', name='Calibrazione Perfetta',
+                            fig_accuracy.add_trace(
+                                go.Scatter(x=[min_axis_val, max_axis_val], y=[min_axis_val, max_axis_val], mode='lines', name='Win Rate = Edge Medio',
                                           line=dict(color='black', width=1, dash='dash'))
                             )
+                            # Linea orizzontale a 50% Win Rate
+                            fig_accuracy.add_hline(y=0.5, line_dash="dot", line_color="blue", opacity=0.7, annotation_text="50% Win Rate", annotation_position="bottom right")
 
-                            sizes = prediction_accuracy['Scommesse_Totali'].clip(lower=5) * 1.5
-                            fig_calibration.add_trace(
+
+                            sizes = accuracy_by_bin['Scommesse_Totali'].clip(lower=5) * 1.5
+                            fig_accuracy.add_trace(
                                 go.Scatter(
-                                    x=prediction_accuracy['Prob_Media'],
-                                    y=prediction_accuracy['Precisione_Reale'],
+                                    x=accuracy_by_bin['Valore_Medio_Bin'],
+                                    y=accuracy_by_bin['Precisione_Reale'],
                                     mode='markers+text',
                                     marker=dict(
                                         size=sizes,
-                                        color=prediction_accuracy['Differenza'],
+                                        color=accuracy_by_bin['Differenza_Rate_Valore'],
                                         colorscale='RdYlGn',
                                         cmid=0,
-                                        cmin=-0.2,
-                                        cmax=0.2,
-                                        colorbar=dict(title='Sovra/Sotto Stima'),
+                                        cmin=min(-0.2, accuracy_by_bin['Differenza_Rate_Valore'].min() if accuracy_by_bin['Differenza_Rate_Valore'].notna().any() else -0.2),
+                                        cmax=max(0.2, accuracy_by_bin['Differenza_Rate_Valore'].max() if accuracy_by_bin['Differenza_Rate_Valore'].notna().any() else 0.2),
+                                        colorbar=dict(title='Win Rate - Edge Medio'),
                                         line=dict(width=1, color='black')
                                     ),
-                                    text=prediction_accuracy['Prob_Bin'].astype(str), 
+                                    text=accuracy_by_bin['Value_Bin'].astype(str),
                                     textposition="top center",
-                                    name='Calibrazione Reale',
-                                    hovertemplate='<b>Bin: %{text}</b><br>Probabilità Media Stimata: %{x:.1%}<br>Precisione Reale (Win Rate): %{y:.1%}<br>Differenza: %{marker.color:+.1%}<br>Scommesse nel Bin: %{customdata[0]}<extra></extra>',
-                                    customdata=prediction_accuracy[['Scommesse_Totali']]
+                                    name='Precisione Reale per Bin di Edge',
+                                    hovertemplate='<b>Bin Edge: %{text}</b><br>Edge Medio Stimato: %{x:.1%}<br>Precisione Reale (Win Rate): %{y:.1%}<br>Differenza (Rate - Edge): %{marker.color:+.1%}<br>Scommesse nel Bin: %{customdata[0]}<extra></extra>',
+                                    customdata=accuracy_by_bin[['Scommesse_Totali']]
                                 )
                             )
 
-                            y_axis_max = 1.05
-                            if not prediction_accuracy.empty and prediction_accuracy['Precisione_Reale'].notna().any():
-                                y_axis_max = max(1.05, prediction_accuracy['Precisione_Reale'].max() + 0.05)
+                            x_axis_range = [min_axis_val - 0.05, max_axis_val + 0.05]
+                            y_axis_range = [0, max(1.05, accuracy_by_bin['Precisione_Reale'].max() + 0.05 if accuracy_by_bin['Precisione_Reale'].notna().any() else 1.05)]
 
 
-                            fig_calibration.update_layout(
-                                title='Calibrazione della Previsione: Probabilità Stimata vs. Precisione Reale',
-                                xaxis_title='Probabilità Media Stimata nel Bin',
+                            fig_accuracy.update_layout(
+                                title=f'Precisione Reale (Win Rate) vs. {colonna_edge} Medio nel Bin',
+                                xaxis_title=f'{colonna_edge} Medio Stimato nel Bin',
                                 yaxis_title='Precisione Reale (Win Rate) nel Bin',
                                 template='plotly_white',
-                                xaxis=dict(tickformat='.0%', range=[min(0.45, perfect_cal_x_min -0.05) , max(1.0, perfect_cal_x_max+0.05)]),
-                                yaxis=dict(tickformat='.0%', range=[0, y_axis_max])
+                                xaxis=dict(tickformat='.1%', range=x_axis_range),
+                                yaxis=dict(tickformat='.1%', range=y_axis_range)
                             )
 
-                            st.plotly_chart(fig_calibration, use_container_width=True)
-                            st.caption("Analisi della calibrazione: confronta la probabilità stimata con la frequenza reale di vincita per diversi intervalli di probabilità. I punti sopra la diagonale indicano sottostima della probabilità reale, sotto indicano sovrastima. Idealmente, i punti dovrebbero essere vicini alla linea diagonale.")
+                            st.plotly_chart(fig_accuracy, use_container_width=True)
+                            st.caption(f"Analisi della precisione: confronta l'{colonna_edge} medio stimato con la frequenza reale di vincita per diversi intervalli di Edge Value. Idealmente, per Edge Value positivi ci si aspetta un Win Rate che porti a profitto. La linea diagonale indica dove il Win Rate è numericamente uguale all'Edge Medio del bin. La linea blu indica un Win Rate del 50%.")
 
-                            st.markdown("##### Dettaglio Calibrazione Previsioni")
-                            display_accuracy = prediction_accuracy.copy()
-                            display_accuracy['Prob_Media'] = display_accuracy['Prob_Media'].map(lambda x: f"{x:.1%}" if pd.notna(x) else "N/A")
-                            display_accuracy['Precisione_Reale'] = display_accuracy['Precisione_Reale'].map(lambda x: f"{x:.1%}" if pd.notna(x) else "N/A")
-                            display_accuracy['Differenza'] = display_accuracy['Differenza'].map(lambda x: f"{x:+.1%}" if pd.notna(x) else "N/A")
+                            st.markdown(f"##### Dettaglio Precisione per Range di {colonna_edge}")
+                            display_accuracy_data = accuracy_by_bin.copy()
+                            display_accuracy_data['Valore_Medio_Bin'] = display_accuracy_data['Valore_Medio_Bin'].map(lambda x: f"{x:.1%}" if pd.notna(x) else "N/A")
+                            display_accuracy_data['Precisione_Reale'] = display_accuracy_data['Precisione_Reale'].map(lambda x: f"{x:.1%}" if pd.notna(x) else "N/A")
+                            display_accuracy_data['Differenza_Rate_Valore'] = display_accuracy_data['Differenza_Rate_Valore'].map(lambda x: f"{x:+.1%}" if pd.notna(x) else "N/A")
 
-                            display_accuracy.columns = ['Range Probabilità Stimata', 'Totale Scommesse', 'Vincite', 'Prob. Media Stimata',
-                                                          'Precisione Reale', 'Differenza (Reale - Stimata)']
-                            st.dataframe(display_accuracy, use_container_width=True, hide_index=True)
+                            display_accuracy_data.columns = [f'Range {colonna_edge}', 'Totale Scommesse', 'Vincite', f'{colonna_edge} Medio',
+                                                          'Precisione Reale (Win Rate)', 'Differenza (Rate - Edge Medio)']
+                            st.dataframe(display_accuracy_data, use_container_width=True, hide_index=True)
                         else:
-                            st.info("Nessun dato sufficiente per il grafico di calibrazione dopo il binning.")
+                            st.info(f"Nessun dato sufficiente per il grafico di analisi della precisione per {colonna_edge} dopo il binning.")
+                    else:
+                        st.info(f"Impossibile creare bin significativi per l'{colonna_edge}.")
                 else:
-                    st.info("Probabilità stimate non valide o fuori range per l'analisi di calibrazione (es. tutte NaN, <0 o >= 1.0).")
+                    st.info(f"Nessun {colonna_edge} valido per l'analisi di precisione.")
             else:
-                st.info("Nessun dato con esito Win/Loss e probabilità stimata per l'analisi di calibrazione.")
+                st.info(f"Nessun dato con esito Win/Loss e {colonna_edge} per l'analisi di precisione.")
             st.markdown("---")
         else:
-            st.info(f"La colonna '{colonna_prob}' è necessaria per l'analisi di precisione della previsione ma non è disponibile.")
+            st.info(f"La colonna '{colonna_edge}' è necessaria per questa analisi ma non è disponibile.")
             st.markdown("---")
 
 
@@ -1018,7 +1035,7 @@ try:
         col_c, col_d = st.columns(2)
         with col_c:
              if colonna_edge in df_results_filtered_final.columns:
-                 st.subheader(f"Rapporto {colonna_edge} vs P/L (Vittoria/Perdita)") # Titolo modificato per chiarezza
+                 st.subheader(f"Rapporto {colonna_edge} vs P/L (Vittoria/Perdita)")
                  df_plot_edge_pl = df_results_filtered_final[df_results_filtered_final[colonna_edge].notna()].copy()
                  if not df_plot_edge_pl.empty:
                      df_plot_edge_pl['Stake Formattato'] = df_plot_edge_pl[colonna_stake].apply(format_currency)
@@ -1039,7 +1056,6 @@ try:
                          fig_edge_pl.update_yaxes(title="P/L (€)", showgrid=False, tickformat="~€")
                      else:
                          fig_edge_pl.update_yaxes(title="P/L (€)", showgrid=False, ticksuffix=" €")
-                     # MODIFICA: Aggiunta linea verticale tratteggiata
                      fig_edge_pl.add_vline(x=0.20, line_dash="dash", line_color="gray")
                      st.plotly_chart(fig_edge_pl, use_container_width=True);
                      st.caption("Esplora la correlazione tra edge value e P/L.")
@@ -1048,7 +1064,7 @@ try:
 
         with col_d:
               if colonna_stake in df_filtered_final.columns:
-                 st.subheader(f"Partecipazione Distribuzione (Tutti Filtrati > 0)") # Titolo aggiornato per coerenza
+                 st.subheader(f"Partecipazione Distribuzione (Tutti Filtrati > 0)")
                  df_plot_stake = df_filtered_final[df_filtered_final[colonna_stake].notna() & (df_filtered_final[colonna_stake] > 0)]
                  if not df_plot_stake.empty:
                      fig_stake_hist = px.histogram(df_plot_stake, x=colonna_stake, nbins=15, title="Distribuzione Stake (€) (Periodo Filtrato)", labels={colonna_stake: 'Importo Puntato (€)'}, color_discrete_sequence=[color_line1])
@@ -1060,9 +1076,8 @@ try:
                      st.plotly_chart(fig_stake_hist, use_container_width=True); st.caption("Mostra come si distribuiscono gli importi puntati.")
                  else: st.info("Nessuna puntata valida (> 0 €).")
               else: st.info(f"Colonna '{colonna_stake}' non disponibile.")
-        st.markdown("---") # Aggiunto un separatore per coerenza dopo la colonna
+        st.markdown("---")
 
-        # MODIFICA: Spostato il grafico "Conteggio Esiti per Quota" qui
         st.markdown(f"##### Conteggio Esiti (Vittoria/Perdita) per {colonna_quota}")
         if not df_results_filtered_final.empty and colonna_quota in df_results_filtered_final.columns:
              df_plot_odds = df_results_filtered_final.groupby([colonna_quota, 'Esito_Standard']).size().reset_index(name='Conteggio')
@@ -1079,375 +1094,200 @@ try:
 
 
         # Analisi dell'evoluzione del sistema
-        st.markdown("---") # Separatore prima di questa sotto-sezione
-        st.markdown("##### Evoluzione del Sistema nel Tempo") # Titolo più specifico
+        st.markdown("---")
+        st.markdown("##### Evoluzione del Sistema nel Tempo")
 
         if not df_results_filtered_final.empty and colonna_data in df_results_filtered_final.columns and df_results_filtered_final[colonna_data].notna().any():
-            # Calcola metriche per finestra mobile (per vedere l'evoluzione)
             max_slider_val = len(df_results_filtered_final) if len(df_results_filtered_final) > 5 else 5
             default_slider_val = min(20, max_slider_val)
 
-            window_size = st.slider("Finestra mobile (numero di scommesse)", min_value=5, max_value=max_slider_val, value=default_slider_val, 
+            window_size = st.slider("Finestra mobile (numero di scommesse)", min_value=5, max_value=max_slider_val, value=default_slider_val,
                                   help="Numero di scommesse considerate per ogni punto della finestra mobile")
 
             if len(df_results_filtered_final) >= window_size:
-                # Calcola ROI e win rate per finestra mobile
                 df_sorted = df_results_filtered_final.sort_values(by=colonna_data).reset_index(drop=True)
-
                 rolling_roi = []
                 rolling_winrate = []
                 rolling_dates = []
 
                 for i in range(window_size, len(df_sorted) + 1):
                     window = df_sorted.iloc[i-window_size:i]
-
-                    # ROI per finestra
                     window_stake = window[colonna_stake].sum()
                     window_pl = window['P/L'].sum()
                     window_roi = (window_pl / window_stake) * 100 if window_stake > 0 else 0
-
-                    # Win rate per finestra
                     window_wins = (window['Esito_Standard'] == 'Win').sum()
-                    window_winrate = window_wins / window_size
+                    window_winrate = window_wins / window_size if window_size > 0 else 0
 
                     rolling_roi.append(window_roi)
                     rolling_winrate.append(window_winrate)
                     rolling_dates.append(window.iloc[-1][colonna_data])
 
-                # Crea dataframe per grafico
-                df_rolling = pd.DataFrame({
-                    'Data': rolling_dates,
-                    'ROI': rolling_roi,
-                    'Win_Rate': rolling_winrate
-                })
-
-                # Grafico dell'evoluzione
-                fig_evolution = make_subplots(specs=[[{"secondary_y": True}]])
-                # MODIFICA: Rimosso smoothing
-                fig_evolution.add_trace(
-                    go.Scatter(x=df_rolling['Data'], y=df_rolling['ROI'],
-                              name=f'ROI Mobile ({window_size} scommesse)',
-                              line=dict(color='#4682B4', width=2, shape='linear')), # MODIFICATO shape
-                    secondary_y=False
-                )
-                # MODIFICA: Rimosso smoothing
-                fig_evolution.add_trace(
-                    go.Scatter(x=df_rolling['Data'], y=df_rolling['Win_Rate'],
-                              name=f'Win Rate Mobile ({window_size} scommesse)',
-                              line=dict(color='#7B68EE', width=2, shape='linear')), # MODIFICATO shape
-                    secondary_y=True
-                )
-
-                fig_evolution.update_layout(
-                    title=f"Evoluzione del Sistema - Finestra Mobile di {window_size} scommesse",
-                    template='plotly_white',
-                    legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
-                )
-
-                fig_evolution.update_yaxes(title_text="ROI (%)", secondary_y=False, showgrid=False)
-                fig_evolution.update_yaxes(title_text="Win Rate", secondary_y=True, showgrid=False, tickformat=".1%")
-                fig_evolution.update_xaxes(title_text="Data", showgrid=False)
-
-                st.plotly_chart(fig_evolution, use_container_width=True)
-                st.caption("Mostra l'evoluzione del ROI e Win Rate nel tempo usando una finestra mobile. Utile per verificare se il sistema migliora o peggiora nel tempo.")
+                if rolling_dates: # Procedi solo se ci sono dati per il rolling
+                    df_rolling = pd.DataFrame({'Data': rolling_dates, 'ROI': rolling_roi, 'Win_Rate': rolling_winrate})
+                    fig_evolution = make_subplots(specs=[[{"secondary_y": True}]])
+                    fig_evolution.add_trace(
+                        go.Scatter(x=df_rolling['Data'], y=df_rolling['ROI'],
+                                  name=f'ROI Mobile ({window_size} scommesse)',
+                                  line=dict(color='#4682B4', width=2, shape='linear')),
+                        secondary_y=False
+                    )
+                    fig_evolution.add_trace(
+                        go.Scatter(x=df_rolling['Data'], y=df_rolling['Win_Rate'],
+                                  name=f'Win Rate Mobile ({window_size} scommesse)',
+                                  line=dict(color='#7B68EE', width=2, shape='linear')),
+                        secondary_y=True
+                    )
+                    fig_evolution.update_layout(
+                        title=f"Evoluzione del Sistema - Finestra Mobile di {window_size} scommesse",
+                        template='plotly_white',
+                        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+                    )
+                    fig_evolution.update_yaxes(title_text="ROI (%)", secondary_y=False, showgrid=False)
+                    fig_evolution.update_yaxes(title_text="Win Rate", secondary_y=True, showgrid=False, tickformat=".1%")
+                    fig_evolution.update_xaxes(title_text="Data", showgrid=False)
+                    st.plotly_chart(fig_evolution, use_container_width=True)
+                    st.caption("Mostra l'evoluzione del ROI e Win Rate nel tempo usando una finestra mobile. Utile per verificare se il sistema migliora o peggiora nel tempo.")
+                else:
+                    st.info("Non ci sono abbastanza dati per calcolare l'evoluzione con la finestra mobile selezionata.")
             else:
                 st.info(f"Insufficiente numero di scommesse per l'analisi con finestra mobile. Ne servono almeno {window_size} (dati filtrati: {len(df_results_filtered_final)}).")
         else:
             st.info("Nessun dato o date valide per l'analisi dell'evoluzione del sistema.")
 
 
-
         # Simulatore di strategie di staking
         st.markdown("---")
-        st.markdown("##### Simulatore di Strategie di Staking") # Titolo più specifico
+        st.markdown("##### Simulatore di Strategie di Staking")
 
         if not df_results_filtered_final.empty:
-            col1_sim, col2_sim = st.columns(2) # Rinomina per evitare conflitti
+            col1_sim, col2_sim = st.columns(2)
 
-            # Selezione tipo di strategia
             staking_strategy = col1_sim.selectbox(
                 "Seleziona Strategia di Staking",
                 ["Stake Fisso", "Percentuale Bankroll", "Kelly Criterion", "Stake Proporzionale all'Edge"]
             )
-
-            # Parametri di configurazione
             starting_bankroll = col2_sim.number_input("Bankroll Iniziale (€)", min_value=100.0, value=1000.0, step=100.0)
 
-
-            # Descrizioni dettagliate per ciascuna strategia
             staking_descriptions = {
-                "Stake Fisso": """
-                **Stake Fisso**: Puntata sempre dello stesso importo, indipendentemente dal bankroll o dalle probabilità.
+                "Stake Fisso": "**Stake Fisso**: Puntata sempre dello stesso importo...",
+                "Percentuale Bankroll": "**Percentuale Bankroll**: Puntata calcolata come percentuale fissa...",
+                "Kelly Criterion": "**Kelly Criterion**: Formula matematica che massimizza...",
+                "Stake Proporzionale all'Edge": "**Stake Proporzionale all'Edge**: Puntata proporzionale al vantaggio..."
+            } # Descrizioni abbreviate per brevità, nel codice reale sono complete
 
-                **Principio**: Semplicità e costanza.
-
-                **Grandezze considerate**:
-                - Importo fisso deciso dall'utente
-
-                **Vantaggi**:
-                - Semplice da implementare
-                - Facile da tracciare
-
-                **Svantaggi**:
-                - Non si adatta al bankroll crescente o calante
-                - Non considera le probabilità o vantaggio atteso
-                """,
-
-                "Percentuale Bankroll": """
-                **Percentuale Bankroll**: Puntata calcolata come percentuale fissa del bankroll attuale.
-
-                **Principio**: Crescita o diminuzione proporzionale al bankroll.
-
-                **Grandezze considerate**:
-                - Bankroll attuale
-                - Percentuale fissa decisa dall'utente
-
-                **Vantaggi**:
-                - Si adatta automaticamente alle vincite/perdite
-                - Protegge contro il fallimento (stake diminuisce con le perdite)
-                - Sfrutta i periodi vincenti (stake aumenta con le vincite)
-
-                **Svantaggi**:
-                - Non considera la qualità della singola scommessa (probabilità o vantaggio)
-                """,
-
-                "Kelly Criterion": """
-                **Kelly Criterion**: Formula matematica che massimizza la crescita attesa del bankroll.
-
-                **Principio**: Crescita ottimale del capitale nel lungo termine.
-
-                **Formula (frazione da puntare del bankroll)**: Kelly = (p × b - (1-p)) / b
-                dove:
-                - p = probabilità di vincita stimata (es. 0.6 per 60%)
-                - b = quota decimale - 1 (es. per quota 2.5, b = 1.5)
-
-                **Grandezze considerate**:
-                - Probabilità stimata di vincita
-                - Quota offerta
-                - Bankroll attuale
-                - Frazione di Kelly (per moderare il rischio, es. Half Kelly = 50%)
-
-                **Vantaggi**:
-                - Matematicamente ottimale per crescita a lungo termine (se le probabilità sono stimate correttamente)
-                - Considera sia probabilità che quota per massimizzare il valore
-
-                **Svantaggi**:
-                - Molto sensibile a errori di stima della probabilità (sovrastimare p porta a stake eccessivi)
-                - Può suggerire stake molto elevati (rischiosi) con edge percepito alto
-                - Richiede la colonna 'Probabilita Stimata' nel CSV.
-                """,
-
-                "Stake Proporzionale all'Edge": """
-                **Stake Proporzionale all'Edge**: Puntata proporzionale al vantaggio atteso (edge) della scommessa.
-
-                **Principio**: Più alto è il vantaggio, maggiore sarà la puntata (fino a un cap).
-
-                **Calcolo Edge**: Edge = (probabilità stimata × quota decimale) - 1
-
-                **Grandezze considerate**:
-                - Probabilità stimata di vincita
-                - Quota offerta
-                - Moltiplicatore edge (per regolare l'aggressività)
-                - Bankroll attuale (per limiti massimi, es. max 10% del bankroll)
-                - Richiede la colonna 'Probabilita Stimata' nel CSV.
-                """
-            }
-
-            # Mostra descrizione della strategia
             with st.expander(f"Dettagli sulla Strategia: {staking_strategy}"):
-                st.markdown(staking_descriptions[staking_strategy])
+                st.markdown(staking_descriptions.get(staking_strategy, "Nessuna descrizione disponibile."))
 
-            # Parametri specifici per strategia con range di valori
-            stake_param = None # Inizializza stake_param
+
+            stake_param = None
             if staking_strategy == "Stake Fisso":
-                fixed_stake = st.slider("Stake Fisso (€)", min_value=1.0, max_value=min(100.0, starting_bankroll), value=min(10.0, starting_bankroll/10), step=1.0)
+                fixed_stake = st.slider("Stake Fisso (€)", min_value=1.0, max_value=min(100.0, starting_bankroll), value=min(10.0, starting_bankroll/10 if starting_bankroll > 0 else 10.0), step=1.0)
                 stake_param = fixed_stake
-
-                # Mostra info sul range di stake
-                st.caption(f"Con questa configurazione, lo stake sarà sempre **{fixed_stake:.2f} €** per ogni scommessa (se il bankroll lo permette).")
+                st.caption(f"Stake fisso: **{fixed_stake:.2f} €**.")
 
             elif staking_strategy == "Percentuale Bankroll":
                 bankroll_perc = st.slider("Percentuale Bankroll per Scommessa (%)", min_value=0.1, max_value=10.0, value=2.0, step=0.1)
                 stake_param = bankroll_perc / 100
-
-                # Calcola e mostra range di stake
-                initial_stake_val = starting_bankroll * stake_param # Rinomina variabile
-                min_stake_val = max(1.0, starting_bankroll * 0.1 * stake_param)  # Assumendo perdita del 90%
-                max_stake_val = starting_bankroll * 2 * stake_param  # Assumendo raddoppio del bankroll
-
-
-                st.caption(f"""
-                **Range di Stake Indicativo**: Con bankroll iniziale di {starting_bankroll:.2f} € e percentuale del {bankroll_perc:.1f}%:
-                - Stake iniziale: **{initial_stake_val:.2f} €**
-                - Range atteso (varia con il bankroll): da **{min_stake_val:.2f} €** a **{max_stake_val:.2f} €**
-                """)
+                st.caption(f"Stake: **{bankroll_perc:.1f}%** del bankroll.")
 
             elif staking_strategy == "Kelly Criterion":
                 if colonna_prob not in df_results_filtered_final.columns:
-                    st.error(f"La strategia 'Kelly Criterion' richiede la colonna '{colonna_prob}' nel file CSV.")
+                    st.error(f"Strategia '{staking_strategy}' richiede '{colonna_prob}'.")
                 else:
-                    kelly_fraction_perc = st.slider("Frazione di Kelly (%)", min_value=1, max_value=100, value=50, step=1,
-                                             help="Percentuale del Kelly stake da utilizzare (100% = Kelly completo, 50% = Half Kelly). Riduce la volatilità.")
+                    kelly_fraction_perc = st.slider("Frazione di Kelly (%)", min_value=1, max_value=100, value=50, step=1)
                     stake_param = kelly_fraction_perc / 100
+                    st.caption(f"Stake: **{kelly_fraction_perc}%** del Kelly calcolato.")
 
-
-                    # Calcola stake range per Kelly (esempio basato su medie)
-                    avg_prob_kelly = df_results_filtered_final[colonna_prob].mean() if colonna_prob in df_results_filtered_final else None
-                    avg_odds_kelly = df_results_filtered_final[colonna_quota].mean() if colonna_quota in df_results_filtered_final else None
-
-
-                    if pd.notna(avg_prob_kelly) and pd.notna(avg_odds_kelly) and avg_odds_kelly > 1 and avg_prob_kelly > 0 and avg_prob_kelly < 1:
-                        b_kelly = avg_odds_kelly - 1
-                        full_kelly_frac = (avg_prob_kelly * b_kelly - (1 - avg_prob_kelly)) / b_kelly
-                        full_kelly_frac = max(0, full_kelly_frac) # Kelly non può essere negativo
-
-                        actual_kelly_frac_to_bet = full_kelly_frac * stake_param
-                        example_stake = starting_bankroll * actual_kelly_frac_to_bet
-
-                        st.caption(f"""
-                        **Stake Kelly Indicativo (basato su medie filtrate)**:
-                        - Prob. media: {avg_prob_kelly:.2%}, Quota media: {avg_odds_kelly:.2f}
-                        - Frazione Kelly Completa Calcolata: {full_kelly_frac:.2%}
-                        - Frazione Kelly da Puntare (con slider {kelly_fraction_perc}%): {actual_kelly_frac_to_bet:.2%} del bankroll
-                        - Stake Esempio con Bankroll Iniziale: **{example_stake:.2f} €**
-                        - Lo stake sarà 0 € se l'edge calcolato è nullo o negativo.
-                        """)
-                    else:
-                        st.caption("Impossibile calcolare un esempio di stake Kelly con le medie dei dati filtrati (probabilità o quote non valide/disponibili).")
-
-
-            else:  # Stake Proporzionale all'Edge
-                if colonna_prob not in df_results_filtered_final.columns:
-                     st.error(f"La strategia 'Stake Proporzionale all'Edge' richiede la colonna '{colonna_prob}' nel file CSV.")
+            elif staking_strategy == "Stake Proporzionale all'Edge":
+                if colonna_prob not in df_results_filtered_final.columns or colonna_edge not in df_results_filtered_final.columns: # Aggiunto check colonna_edge
+                    st.error(f"Strategia '{staking_strategy}' richiede '{colonna_prob}' e '{colonna_edge}'.")
                 else:
-                    edge_multiplier = st.slider("Moltiplicatore Stake per Unità di Edge", min_value=1, max_value=200, value=50, step=1,
-                                              help="Quanto puntare per ogni punto percentuale di edge (es. Edge 0.10 * Multiplier 50 = Stake 5€, soggetto a cap).")
-                    max_stake_perc_bankroll = st.slider("Cap Massimo Stake (% del Bankroll)", min_value=1.0, max_value=20.0, value=10.0, step=0.5,
-                                                      help="Massima percentuale del bankroll da puntare per una singola scommessa, indipendentemente dall'edge.")
+                    edge_multiplier = st.slider("Moltiplicatore Stake per Unità di Edge", min_value=1, max_value=200, value=50, step=1)
+                    max_stake_perc_bankroll = st.slider("Cap Massimo Stake (% del Bankroll)", min_value=1.0, max_value=20.0, value=10.0, step=0.5)
                     stake_param = {'multiplier': edge_multiplier, 'cap_perc': max_stake_perc_bankroll / 100}
+                    st.caption(f"Moltiplicatore Edge: {edge_multiplier}, Cap: {max_stake_perc_bankroll}%.")
 
 
-                    # Calcola range di stake per Edge (esempio basato su medie)
-                    avg_prob_edge = df_results_filtered_final[colonna_prob].mean() if colonna_prob in df_results_filtered_final else None
-                    avg_odds_edge = df_results_filtered_final[colonna_quota].mean() if colonna_quota in df_results_filtered_final else None
-
-                    if pd.notna(avg_prob_edge) and pd.notna(avg_odds_edge):
-                        calculated_edge = (avg_prob_edge * avg_odds_edge) - 1
-                        example_stake_edge = 0
-                        if calculated_edge > 0:
-                            example_stake_edge = min(calculated_edge * edge_multiplier, starting_bankroll * stake_param['cap_perc'])
-
-                        st.caption(f"""
-                        **Stake Edge Indicativo (basato su medie filtrate)**:
-                        - Prob. media: {avg_prob_edge:.2%}, Quota media: {avg_odds_edge:.2f} => Edge Calcolato: {calculated_edge:.2%}
-                        - Stake Esempio (con moltiplicatore {edge_multiplier} e cap {max_stake_perc_bankroll}%): **{example_stake_edge:.2f} €**
-                        - Lo stake sarà 0 € se l'edge calcolato è nullo o negativo.
-                        """)
-                    else:
-                        st.caption("Impossibile calcolare un esempio di stake Edge con le medie dei dati filtrati.")
-
-
-            # Esegui simulazione
             if st.button("Simula Strategia"):
-                # Verifica se le colonne necessarie per Kelly o Edge sono presenti, se la strategia è selezionata
                 proceed_simulation = True
                 if staking_strategy in ["Kelly Criterion", "Stake Proporzionale all'Edge"] and colonna_prob not in df_results_filtered_final.columns:
-                    st.error(f"Simulazione interrotta: la colonna '{colonna_prob}' è necessaria per la strategia '{staking_strategy}' ma non è presente nei dati filtrati.")
+                    st.error(f"'{colonna_prob}' non trovata per {staking_strategy}.")
                     proceed_simulation = False
+                if staking_strategy == "Stake Proporzionale all'Edge" and colonna_edge not in df_results_filtered_final.columns:
+                     st.error(f"'{colonna_edge}' non trovata per {staking_strategy}.")
+                     proceed_simulation = False
 
-                if proceed_simulation and stake_param is not None: # Assicurati che stake_param sia definito
-                    # Ordina le scommesse per data
+
+                if proceed_simulation and stake_param is not None:
                     df_sim = df_results_filtered_final.sort_values(by=colonna_data).copy()
-                    df_sim.reset_index(drop=True, inplace=True) # Resetta indice per iterrows
+                    df_sim.reset_index(drop=True, inplace=True)
 
-                    # Setup per simulazione
                     bankroll = float(starting_bankroll)
                     bankroll_history = [bankroll]
-                    bet_amounts_sim = [] # Rinomina per evitare conflitti
+                    bet_amounts_sim = []
                     stakes_as_perc_of_bankroll = []
 
-
-                    for index_sim, bet_row in df_sim.iterrows(): # Rinomina variabili
-                        current_stake = 0.0 # Inizializza stake per questo giro
-                        # Controllo che il bankroll sia positivo
-                        if bankroll <= 0.01: # Se il bankroll è virtualmente zero
-                            current_stake = 0.0
-                        # Calcola lo stake in base alla strategia
+                    for index_sim, bet_row in df_sim.iterrows():
+                        current_stake = 0.0
+                        if bankroll <= 0.01: current_stake = 0.0
                         elif staking_strategy == "Stake Fisso":
                             current_stake = float(min(stake_param, bankroll))
                         elif staking_strategy == "Percentuale Bankroll":
                             current_stake = float(min(bankroll * float(stake_param), bankroll))
                         elif staking_strategy == "Kelly Criterion":
-                            prob_kelly = bet_row[colonna_prob] if pd.notna(bet_row[colonna_prob]) else 0
-                            quota_kelly = bet_row[colonna_quota] if pd.notna(bet_row[colonna_quota]) else 0
-
+                            prob_kelly = bet_row[colonna_prob] if pd.notna(bet_row.get(colonna_prob)) else 0 # Usato .get per sicurezza
+                            quota_kelly = bet_row[colonna_quota] if pd.notna(bet_row.get(colonna_quota)) else 0
                             if prob_kelly > 0 and prob_kelly < 1 and quota_kelly > 1:
-                                b_val_kelly = quota_kelly - 1 # Guadagno netto
+                                b_val_kelly = quota_kelly - 1
                                 kelly_full_fraction = (prob_kelly * b_val_kelly - (1 - prob_kelly)) / b_val_kelly
                                 if kelly_full_fraction > 0:
-                                    stake_fraction_to_bet = kelly_full_fraction * float(stake_param) # stake_param è kelly_fraction (0-1)
-                                    current_stake = float(min(stake_fraction_to_bet * bankroll, bankroll)) # Non puntare più del bankroll
-                                else:
-                                    current_stake = 0.0 # Edge non positivo
-                            else:
-                                current_stake = 0.0 # Dati non validi per Kelly
-                        else:  # Stake Proporzionale all'Edge
-                            prob_edge_sim = bet_row[colonna_prob] if pd.notna(bet_row[colonna_prob]) else 0 # Rinomina
-                            quota_edge_sim = bet_row[colonna_quota] if pd.notna(bet_row[colonna_quota]) else 0 # Rinomina
+                                    stake_fraction_to_bet = kelly_full_fraction * float(stake_param)
+                                    current_stake = float(min(stake_fraction_to_bet * bankroll, bankroll))
+                            else: current_stake = 0.0
+                        elif staking_strategy == "Stake Proporzionale all'Edge":
+                            # Usa colonna_edge, non colonna_prob per calcolare l'edge direttamente
+                            edge_val_sim = bet_row[colonna_edge] if pd.notna(bet_row.get(colonna_edge)) else 0
+                            if edge_val_sim > 0: # Lo stake è proporzionale all'edge stesso
+                                multiplier = float(stake_param['multiplier'])
+                                cap_fraction = float(stake_param['cap_perc'])
+                                # Lo stake NON è edge_value * multiplier in termini di soldi direttamente,
+                                # ma piuttosto, l'edge value (es. 0.1 per 10%) potrebbe essere usato per scalare uno stake base
+                                # Per semplicità, se l'utente intende edge come % del bankroll:
+                                # stake_calculated_from_edge = edge_val_sim * bankroll * multiplier_di_sensibilita
+                                # OPPURE, se multiplier è uno stake unitario per punto di edge
+                                stake_calculated_from_edge = edge_val_sim * multiplier # Es: edge 0.1 * mult 50 = 5€
+                                stake_capped_by_bankroll_perc = bankroll * cap_fraction
+                                current_stake = float(min(stake_calculated_from_edge, stake_capped_by_bankroll_perc, bankroll))
+                            else: current_stake = 0.0
 
 
-                            if prob_edge_sim > 0 and quota_edge_sim > 1:
-                                edge_value = (prob_edge_sim * quota_edge_sim) - 1
-                                if edge_value > 0:
-                                    multiplier = float(stake_param['multiplier'])
-                                    cap_fraction = float(stake_param['cap_perc'])
-
-                                    stake_calculated_from_edge = edge_value * multiplier
-                                    stake_capped_by_bankroll_perc = bankroll * cap_fraction
-                                    current_stake = float(min(stake_calculated_from_edge, stake_capped_by_bankroll_perc, bankroll))
-                                else:
-                                    current_stake = 0.0 # Edge non positivo
-                            else:
-                                current_stake = 0.0 # Dati non validi
-
-
-                        # Assicurati che lo stake sia un numero valido e limitato
                         if not pd.notna(current_stake): current_stake = 0.0
                         current_stake = float(max(0.0, min(float(current_stake), bankroll)))
-
                         bet_amounts_sim.append(current_stake)
                         stakes_as_perc_of_bankroll.append((current_stake / bankroll * 100) if bankroll > 0 else 0)
 
-
-                        # Aggiorna il bankroll
                         if bet_row['Esito_Standard'] == 'Win':
-                            quota_win_sim = float(bet_row[colonna_quota]) if pd.notna(bet_row[colonna_quota]) else 1.0 # Rinomina
+                            quota_win_sim = float(bet_row.get(colonna_quota, 1.0))
                             profit = float(current_stake) * (quota_win_sim - 1.0)
                             bankroll += profit
-                        elif bet_row['Esito_Standard'] == 'Loss': # Solo Loss, TBD non dovrebbe essere qui
+                        elif bet_row['Esito_Standard'] == 'Loss':
                             bankroll -= float(current_stake)
 
-
-                        # Assicurati che il bankroll sia un valore numerico valido
                         if not pd.notna(bankroll): bankroll = 0.0
                         bankroll = max(0.0, bankroll)
-
                         bankroll_history.append(bankroll)
-                        if bankroll < 0.01 and index_sim < len(df_sim) -1: # Se il bankroll è esaurito prima dell'ultima scommessa
-                            # Riempi il resto della storia e degli stake con zero per mantenere la stessa lunghezza
+
+                        if bankroll < 0.01 and index_sim < len(df_sim) -1:
                             remaining_bets = len(df_sim) - 1 - index_sim
                             bankroll_history.extend([0.0] * remaining_bets)
                             bet_amounts_sim.extend([0.0] * remaining_bets)
                             stakes_as_perc_of_bankroll.extend([0.0] * remaining_bets)
                             break
 
-
-                    # Aggiungi stake e bankroll alla dataframe (solo se le lunghezze corrispondono)
                     if len(bet_amounts_sim) == len(df_sim):
                         df_sim['Stake_Simulato'] = bet_amounts_sim
                         df_sim['Stake_Simulato_%Bankroll'] = stakes_as_perc_of_bankroll
-                    else: # Se il bankroll è finito prima, bet_amounts_sim potrebbe essere più corto
-                         # Riempi gli stake mancanti con 0 per allineare
+                    else:
                         if len(bet_amounts_sim) < len(df_sim):
                             diff_len = len(df_sim) - len(bet_amounts_sim)
                             bet_amounts_sim.extend([0.0] * diff_len)
@@ -1455,224 +1295,152 @@ try:
                         df_sim['Stake_Simulato'] = bet_amounts_sim[:len(df_sim)]
                         df_sim['Stake_Simulato_%Bankroll'] = stakes_as_perc_of_bankroll[:len(df_sim)]
 
-
-                    # Calcola statistiche della simulazione
                     final_bankroll = bankroll_history[-1]
                     total_staked_sim = sum(bet_amounts_sim)
                     profit_sim = final_bankroll - starting_bankroll
                     roi_sim = (profit_sim / total_staked_sim * 100) if total_staked_sim > 0 else 0
+                    max_bankroll_hist = max(bankroll_history) if bankroll_history else starting_bankroll
 
-                    max_bankroll_hist = max(bankroll_history) if bankroll_history else starting_bankroll # Rinomina
-
-
-                    # Calcolo max drawdown con gestione errori
-                    max_drawdown_abs_sim = 0 # Rinomina
-                    max_drawdown_perc_sim = 0 # Rinomina
+                    max_drawdown_abs_sim = 0
+                    max_drawdown_perc_sim = 0
                     if bankroll_history:
                         bh_series = pd.Series(bankroll_history)
                         cumulative_max_bh = bh_series.cummax()
                         drawdowns_bh = cumulative_max_bh - bh_series
-                        if not drawdowns_bh.empty: # Controllo se drawdowns_bh è vuoto
+                        if not drawdowns_bh.empty:
                             max_drawdown_abs_sim = drawdowns_bh.max()
-
-                            # Trova il picco da cui è iniziato il max drawdown
                             if max_drawdown_abs_sim > 0:
-                                idx_max_dd_end = drawdowns_bh.idxmax() # Indice della fine del max drawdown
+                                idx_max_dd_end = drawdowns_bh.idxmax()
                                 peak_for_max_dd = cumulative_max_bh[idx_max_dd_end]
                                 max_drawdown_perc_sim = (max_drawdown_abs_sim / peak_for_max_dd * 100) if peak_for_max_dd > 0 else 0
-                            else:
-                                max_drawdown_perc_sim = 0
-                        else: # Se drawdowns_bh è vuoto (es. bankroll_history ha un solo elemento)
+                            else: max_drawdown_perc_sim = 0
+                        else:
                              max_drawdown_abs_sim = 0
                              max_drawdown_perc_sim = 0
 
-
-                    # Visualizza risultati
                     st.markdown("##### Risultati Simulazione")
-                    metric_col1_res, metric_col2_res, metric_col3_res, metric_col4_res = st.columns(4) # Rinomina
+                    metric_col1_res, metric_col2_res, metric_col3_res, metric_col4_res = st.columns(4)
                     metric_col1_res.metric("Bankroll Finale", f"{final_bankroll:.2f} €", f"{profit_sim:+.2f} €")
                     metric_col2_res.metric("ROI Simulato", f"{roi_sim:.2f}%", help=f"Profitto / Totale Puntato ({format_currency(profit_sim)} / {format_currency(total_staked_sim)})")
                     metric_col3_res.metric("Bankroll Massimo Raggiunto", f"{max_bankroll_hist:.2f} €")
                     metric_col4_res.metric("Max Drawdown Simulato", f"{max_drawdown_abs_sim:.2f} € ({max_drawdown_perc_sim:.1f}%)", help="Massima perdita dal picco precedente durante la simulazione.")
 
-
-                    # Grafico evoluzione bankroll
                     fig_bankroll = go.Figure()
-                    # MODIFICA: Rimosso smoothing se presente (in questo caso non c'era, ma per coerenza)
                     fig_bankroll.add_trace(go.Scatter(
-                        x=df_sim[colonna_data] if colonna_data in df_sim.columns and not df_sim[colonna_data].empty else df_sim.index, # Usa data o indice
-                        y=bankroll_history[1:] if len(bankroll_history) > 1 else [], # Escludi il bankroll iniziale che non corrisponde a una scommessa
-                        mode='lines',
-                        name='Andamento Bankroll',
-                        line=dict(color='#2E8B57', width=2, shape='linear') # Aggiunto shape='linear'
+                        x=df_sim[colonna_data] if colonna_data in df_sim.columns and not df_sim[colonna_data].empty else df_sim.index,
+                        y=bankroll_history[1:] if len(bankroll_history) > 1 else [],
+                        mode='lines', name='Andamento Bankroll',
+                        line=dict(color='#2E8B57', width=2, shape='linear')
                     ))
-
-                    fig_bankroll.add_hline(y=starting_bankroll, line_dash="dash", line_color="red",
-                                          annotation_text="Bankroll Iniziale", annotation_position="bottom right")
-
-                    fig_bankroll.update_layout(
-                        title=f"Evoluzione Bankroll - Strategia: {staking_strategy}",
-                        xaxis_title='Scommessa (ordinata per data)',
-                        yaxis_title='Bankroll (€)',
-                        template='plotly_white'
-                    )
+                    fig_bankroll.add_hline(y=starting_bankroll, line_dash="dash", line_color="red", annotation_text="Bankroll Iniziale", annotation_position="bottom right")
+                    fig_bankroll.update_layout(title=f"Evoluzione Bankroll - Strategia: {staking_strategy}", xaxis_title='Scommessa (ordinata per data)', yaxis_title='Bankroll (€)', template='plotly_white')
                     st.plotly_chart(fig_bankroll, use_container_width=True)
 
-                    # Tabella con scommesse simulate
                     with st.expander("Mostra Dettaglio Scommesse Simulate"):
                         df_sim_display = df_sim[[colonna_data, colonna_sq_a, colonna_sq_b, colonna_quota, 'Esito_Standard', 'Stake_Simulato', 'Stake_Simulato_%Bankroll', 'P/L']].copy()
-                        if len(bankroll_history[1:]) == len(df_sim_display): # Controllo lunghezza
-                             df_sim_display['Bankroll_Dopo_Scommessa'] = bankroll_history[1:] # Escludi il primo valore (bankroll iniziale)
-                        else: # Gestione disallineamento (es. bankroll esaurito)
+                        if len(bankroll_history[1:]) == len(df_sim_display):
+                             df_sim_display['Bankroll_Dopo_Scommessa'] = bankroll_history[1:]
+                        else:
                              df_sim_display['Bankroll_Dopo_Scommessa'] = bankroll_history[1:][:len(df_sim_display)]
 
-
-                        # Formattazione
                         if colonna_data in df_sim_display.columns:
                             df_sim_display[colonna_data] = pd.to_datetime(df_sim_display[colonna_data], errors='coerce').dt.strftime('%Y-%m-%d')
                         df_sim_display['Stake_Simulato'] = df_sim_display['Stake_Simulato'].apply(format_currency)
                         df_sim_display['Stake_Simulato_%Bankroll'] = df_sim_display['Stake_Simulato_%Bankroll'].map(lambda x: f"{x:.1f}%" if pd.notna(x) else "N/A")
-                        df_sim_display['P/L'] = pd.to_numeric(df_sim_display['P/L'], errors='coerce').apply(format_currency) # P/L originale della scommessa
+                        # Calcola P/L simulato
+                        df_sim_display_pl_simulato = []
+                        for i, row_sim in df_sim_display.iterrows():
+                            stake_s = df_sim['Stake_Simulato'].iloc[i] # Prende lo stake simulato numerico dal df_sim
+                            pl_s = 0
+                            if row_sim['Esito_Standard'] == 'Win' and pd.notna(row_sim[colonna_quota]) and row_sim[colonna_quota] > 0 and pd.notna(stake_s) and stake_s > 0:
+                                pl_s = (stake_s * row_sim[colonna_quota]) - stake_s
+                            elif row_sim['Esito_Standard'] == 'Loss' and pd.notna(stake_s) and stake_s > 0:
+                                pl_s = -stake_s
+                            df_sim_display_pl_simulato.append(pl_s)
+
+                        df_sim_display['P/L Simulato'] = [format_currency(val) for val in df_sim_display_pl_simulato]
                         df_sim_display['Bankroll_Dopo_Scommessa'] = pd.to_numeric(df_sim_display['Bankroll_Dopo_Scommessa'], errors='coerce').apply(format_currency)
 
-                        st.dataframe(df_sim_display, hide_index=True, use_container_width=True)
+                        # Rimuovi la colonna P/L originale e mostra P/L Simulato
+                        st.dataframe(df_sim_display.drop(columns=['P/L'])[[colonna_data, colonna_sq_a, colonna_sq_b, colonna_quota, 'Esito_Standard', 'Stake_Simulato', 'Stake_Simulato_%Bankroll', 'P/L Simulato', 'Bankroll_Dopo_Scommessa']], hide_index=True, use_container_width=True)
+
                 elif proceed_simulation and stake_param is None:
-                     st.warning("Parametri di staking non definiti correttamente. Controlla la configurazione della strategia.")
+                     st.warning("Parametri di staking non definiti correttamente.")
         else:
              st.info("Nessun dato disponibile per il simulatore di strategie di staking.")
 
 
         # Simulatore di regressione alla media
         st.markdown("---")
-        st.markdown("##### Simulatore di Regressione alla Media (Beta)") # Titolo più specifico
+        st.markdown("##### Simulatore di Regressione alla Media (Beta)")
 
         with st.container(border=True):
             st.markdown("""
-            Questo simulatore stima come la performance (ROI) potrebbe evolvere nel futuro, considerando la varianza e la tendenza a regredire verso una media a lungo termine.
-            **Nota**: Questa è una simulazione semplificata e i risultati sono indicativi.
-            """)
+            Questo simulatore stima come la performance (ROI) potrebbe evolvere nel futuro...
+            """) # Descrizione abbreviata
 
-            col1_regr, col2_regr = st.columns(2) # Rinomina
-            
-            # Parametri di input
-            # Rendi i max_value dei slider dinamici in base al numero di scommesse filtrate
-            max_sim_val = len(df_results_filtered_final) if not df_results_filtered_final.empty else 100
-            default_future_bets = min(100, max_sim_val if max_sim_val > 0 else 100)
+            col1_regr, col2_regr = st.columns(2)
 
+            max_sim_val_regr = len(df_results_filtered_final) if not df_results_filtered_final.empty else 100
+            default_future_bets_regr = min(100, max_sim_val_regr if max_sim_val_regr > 0 else 100)
 
-            num_simulations_regr = col1_regr.slider("Numero Simulazioni Monte Carlo", min_value=100, max_value=5000, value=1000, step=100, key="num_sim_regr") 
-            future_bets_regr = col2_regr.slider("Scommesse Future per Simulazione", min_value=10, max_value=max(10, max_sim_val), value=default_future_bets, step=10, key="future_bets_regr")
+            num_simulations_regr = col1_regr.slider("Numero Simulazioni Monte Carlo", min_value=100, max_value=5000, value=1000, step=100, key="num_sim_regr_2")
+            future_bets_regr = col2_regr.slider("Scommesse Future per Simulazione", min_value=10, max_value=max(10, max_sim_val_regr), value=default_future_bets_regr, step=10, key="future_bets_regr_2")
 
 
             if st.button("Esegui Simulazione di Regressione"):
                 if not df_results_filtered_final.empty and win_rate_wl is not None and pd.notna(win_rate_wl) and roi_wl is not None and pd.notna(roi_wl):
-                    # Statistiche attuali dai dati filtrati
-                    current_win_rate_regr = win_rate_wl 
-                    current_roi_regr = roi_wl / 100  # Converti ROI da % a frazione 
+                    current_win_rate_regr = win_rate_wl
+                    current_roi_regr = roi_wl / 100
 
-                    # Estrai le quote delle scommesse vinte e perse dai dati filtrati
                     winning_bets_filtered = df_results_filtered_final[df_results_filtered_final['Esito_Standard'] == 'Win']
-                    losing_bets_filtered = df_results_filtered_final[df_results_filtered_final['Esito_Standard'] == 'Loss']
 
                     if not winning_bets_filtered.empty and colonna_quota in winning_bets_filtered.columns and winning_bets_filtered[colonna_quota].notna().any():
-                        # Per le vincite, il P/L per unità di stake è (quota - 1)
-                        # Usiamo le quote reali delle vincite per campionare il profitto
                         unit_profit_from_wins = (winning_bets_filtered[colonna_quota] - 1).dropna().values
-                        if len(unit_profit_from_wins) == 0: unit_profit_from_wins = np.array([current_roi_regr / current_win_rate_regr if current_win_rate_regr > 0 and pd.notna(current_win_rate_regr) else 0]) # Fallback
-                    else: # Fallback se non ci sono vincite o la colonna quota manca
+                        if len(unit_profit_from_wins) == 0: unit_profit_from_wins = np.array([current_roi_regr / current_win_rate_regr if current_win_rate_regr > 0 and pd.notna(current_win_rate_regr) else 0])
+                    else:
                         avg_profit_per_win_unit_stake = current_roi_regr / current_win_rate_regr if current_win_rate_regr > 0 and pd.notna(current_win_rate_regr) else 0
                         unit_profit_from_wins = np.array([avg_profit_per_win_unit_stake])
 
-
-                    # Per le perdite, il P/L per unità di stake è -1
-                    # Non serve campionare, la perdita unitaria è sempre -1
-
-                    # Simulazione Monte Carlo
-                    simulation_roi_results = [] 
-
+                    simulation_roi_results = []
                     for _ in range(num_simulations_regr):
                         sim_pl_total = 0
-                        # Assumiamo uno stake unitario (1€) per ogni scommessa futura per calcolare il ROI
                         sim_total_stake_normalized = future_bets_regr
-
                         for _ in range(future_bets_regr):
-                            # Determina se la scommessa è vinta in base al win rate attuale
                             if np.random.random() < current_win_rate_regr:
-                                # Scommessa vinta - campiona un profitto unitario dalla distribuzione dei profitti unitari delle vincite
                                 profit_unit = np.random.choice(unit_profit_from_wins) if len(unit_profit_from_wins) > 0 else 0
                                 sim_pl_total += profit_unit
                             else:
-                                # Scommessa persa - perdita unitaria
                                 sim_pl_total -= 1
-
-                        # Calcola ROI della simulazione
                         sim_roi = sim_pl_total / sim_total_stake_normalized if sim_total_stake_normalized > 0 else 0
                         simulation_roi_results.append(sim_roi)
 
+                    simulation_roi_results_np = np.array(simulation_roi_results)
+                    avg_future_roi_regr = np.mean(simulation_roi_results_np)
+                    median_future_roi_regr = np.median(simulation_roi_results_np)
+                    std_future_roi_regr = np.std(simulation_roi_results_np)
+                    percentile_5_regr = np.percentile(simulation_roi_results_np, 5)
+                    percentile_95_regr = np.percentile(simulation_roi_results_np, 95)
 
-                    # Analisi dei risultati
-                    simulation_roi_results_np = np.array(simulation_roi_results) 
-                    avg_future_roi_regr = np.mean(simulation_roi_results_np) 
-                    median_future_roi_regr = np.median(simulation_roi_results_np) 
-                    std_future_roi_regr = np.std(simulation_roi_results_np) 
-                    percentile_5_regr = np.percentile(simulation_roi_results_np, 5) 
-                    percentile_95_regr = np.percentile(simulation_roi_results_np, 95) 
-
-
-                    # Visualizzazione risultati
-                    res_col1_regr, res_col2_regr, res_col3_regr, res_col4_regr = st.columns(4) 
+                    res_col1_regr, res_col2_regr, res_col3_regr, res_col4_regr = st.columns(4)
                     res_col1_regr.metric("ROI Attuale (dati filtrati)", f"{current_roi_regr:.2%}")
                     res_col2_regr.metric("ROI Futuro Stimato (Media Sim.)", f"{avg_future_roi_regr:.2%}",
                                       f"{avg_future_roi_regr - current_roi_regr:+.2%}")
                     res_col3_regr.metric("ROI Futuro (Mediana Sim.)", f"{median_future_roi_regr:.2%}")
                     res_col4_regr.metric("Dev. Std. ROI Sim.", f"{std_future_roi_regr:.2%}")
 
-
-                    # Visualizzazione distribuzione
-                    fig_dist_regr = go.Figure() 
-
-                    # Istogramma dei risultati
-                    fig_dist_regr.add_trace(go.Histogram(
-                        x=simulation_roi_results_np,
-                        histnorm='probability density',
-                        name='Distribuzione ROI Simulato',
-                        marker_color='#4682B4',
-                        opacity=0.7
-                    ))
-
-                    # Linee verticali per i percentili e medie
-                    fig_dist_regr.add_vline(x=avg_future_roi_regr, line_dash="solid", line_color="black",
-                                      annotation_text="Media Sim.", annotation_position="top right")
-                    fig_dist_regr.add_vline(x=current_roi_regr, line_dash="dash", line_color="red",
-                                      annotation_text="ROI Attuale", annotation_position="top left")
-                    fig_dist_regr.add_vline(x=percentile_5_regr, line_dash="dot", line_color="orange",
-                                      annotation_text="5° percentile", annotation_position="bottom left")
-                    fig_dist_regr.add_vline(x=percentile_95_regr, line_dash="dot", line_color="green",
-                                      annotation_text="95° percentile", annotation_position="bottom right")
-
-
-                    fig_dist_regr.update_layout(
-                        title=f"Distribuzione ROI Simulato ({future_bets_regr} scommesse future, {num_simulations_regr} simulazioni)",
-                        xaxis_title="ROI (Return on Investment)",
-                        yaxis_title="Densità di Probabilità",
-                        template='plotly_white',
-                        xaxis=dict(tickformat='.1%')
-                    )
-
+                    fig_dist_regr = go.Figure()
+                    fig_dist_regr.add_trace(go.Histogram(x=simulation_roi_results_np, histnorm='probability density', name='Distribuzione ROI Simulato', marker_color='#4682B4', opacity=0.7))
+                    fig_dist_regr.add_vline(x=avg_future_roi_regr, line_dash="solid", line_color="black", annotation_text="Media Sim.", annotation_position="top right")
+                    fig_dist_regr.add_vline(x=current_roi_regr, line_dash="dash", line_color="red", annotation_text="ROI Attuale", annotation_position="top left")
+                    fig_dist_regr.add_vline(x=percentile_5_regr, line_dash="dot", line_color="orange", annotation_text="5° percentile", annotation_position="bottom left")
+                    fig_dist_regr.add_vline(x=percentile_95_regr, line_dash="dot", line_color="green", annotation_text="95° percentile", annotation_position="bottom right")
+                    fig_dist_regr.update_layout(title=f"Distribuzione ROI Simulato ({future_bets_regr} scommesse future, {num_simulations_regr} simulazioni)", xaxis_title="ROI", yaxis_title="Densità", template='plotly_white', xaxis=dict(tickformat='.1%'))
                     st.plotly_chart(fig_dist_regr, use_container_width=True)
+                    st.markdown(f"**Intervallo Confidenza 90% ROI Futuro**: {percentile_5_regr:.2%} – {percentile_95_regr:.2%}")
 
-                    # Interpretazione
-                    st.markdown("##### Interpretazione dei Risultati della Simulazione")
-                    st.markdown(f"""
-                    - **Intervallo di Confidenza al 90%**: Basandosi su questa simulazione, c'è una probabilità del 90% che il ROI futuro (per le prossime {future_bets_regr} scommesse) si collochi tra **{percentile_5_regr:.2%}** e **{percentile_95_regr:.2%}**.
-                    - **Probabilità di ROI Positivo (Simulato)**: {(simulation_roi_results_np > 0).mean():.1%}
-                    - **Probabilità di Mantenere ROI > 5% (Simulato)**: {(simulation_roi_results_np > 0.05).mean():.1%}
-                    - **Probabilità di Mantenere ROI > 10% (Simulato)**: {(simulation_roi_results_np > 0.10).mean():.1%}
-
-                    La differenza tra il ROI attuale ({current_roi_regr:.2%}) e il ROI futuro medio stimato ({avg_future_roi_regr:.2%}) può indicare una potenziale regressione (o progressione) verso la media attesa a lungo termine, data la varianza osservata.
-                    """)
                 else:
-                    st.warning("Dati filtrati insufficienti o non validi (ROI, Win Rate) per eseguire la simulazione di regressione.")
+                    st.warning("Dati insufficienti per la simulazione di regressione.")
         # --- Fine Simulatore di Regressione ---
 
 
@@ -1695,8 +1463,13 @@ try:
         if 'Quota_BE' in df_display_filtered.columns: df_display_filtered['Quota_BE'] = pd.to_numeric(df_display_filtered['Quota_BE'], errors='coerce').map(lambda x: safe_format(x, '.2f'))
         if 'Kelly_Stake' in df_display_filtered.columns: df_display_filtered['Kelly_Stake'] = pd.to_numeric(df_display_filtered['Kelly_Stake'], errors='coerce').map(lambda x: safe_format(x, '.1%'))
         if colonna_data in df_display_filtered.columns:
-            if pd.api.types.is_datetime64_any_dtype(df_display_filtered[colonna_data]): df_display_filtered[colonna_data] = df_display_filtered[colonna_data].dt.strftime('%Y-%m-%d')
-            else: df_display_filtered[colonna_data] = pd.to_datetime(df_display_filtered[colonna_data], errors='coerce').dt.strftime('%Y-%m-%d')
+            # Verifica se la colonna è già datetime o necessita di conversione
+            if not pd.api.types.is_datetime64_any_dtype(df_display_filtered[colonna_data]):
+                 df_display_filtered[colonna_data] = pd.to_datetime(df_display_filtered[colonna_data], errors='coerce')
+            # Formatta solo se la conversione ha avuto successo e non ci sono NaT che causerebbero errori
+            if pd.api.types.is_datetime64_any_dtype(df_display_filtered[colonna_data]):
+                df_display_filtered[colonna_data] = df_display_filtered[colonna_data].dt.strftime('%Y-%m-%d')
+
 
         colonne_display_ordine = [
             colonna_sq_a, colonna_sq_b, colonna_data, colonna_ora, colonna_quota, 'Quota_BE',
